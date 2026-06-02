@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Introverts' Social Space — tests</title>
+    <style>
+        body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; max-width: 760px; margin: 30px auto; padding: 0 16px; }
+        h1 { font-size: 1.3rem; }
+        #summary { font-weight: 600; padding: 10px 14px; border-radius: 8px; margin: 14px 0; }
+        #summary.pass { background: #e3f7e8; color: #1d6b34; }
+        #summary.fail { background: #fde3e7; color: #a31430; }
+        ul { list-style: none; padding: 0; }
+        li { padding: 6px 10px; border-bottom: 1px solid #eee; font-size: 0.92rem; }
+        li.ok::before  { content: "✓ "; color: #1d6b34; font-weight: 700; }
+        li.bad::before { content: "✗ "; color: #a31430; font-weight: 700; }
+        code { background: #f2f2f4; padding: 1px 5px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <h1>Introverts' Social Space — logic tests</h1>
+    <p>These run against the real <code>storage.js</code> and <code>app.js</code> helpers.
+       Open this file in a browser; results appear below.</p>
+    <div id="summary">Running…</div>
+    <ul id="results"></ul>
+
+    <!-- Use a separate storage key so tests never clobber real app data. -->
+    <script>
+        // Sandbox localStorage namespace for the Store module by shadowing the key
+        // after load. We restore any real data at the end.
+        window.__realKey = "offlinegram.v1";
+    </script>
+    <script src="../src/js/storage.js"></script>
+    <script src="../src/js/app.js"></script>
+    <script>
+    (function () {
+        var results = document.getElementById("results");
+        var passed = 0, failed = 0;
+
+        function check(name, cond) {
+            var li = document.createElement("li");
+            li.className = cond ? "ok" : "bad";
+            li.textContent = name;
+            results.appendChild(li);
+            if (cond) passed++; else failed++;
+        }
+        function eq(name, a, b) { check(name + " (got " + JSON.stringify(a) + ")", a === b); }
+
+        // Preserve real data, then work in a clean slate.
+        var backup = localStorage.getItem(Store.KEY);
+        localStorage.removeItem(Store.KEY);
+
+        // --- Store: defaults ---
+        var fresh = Store.load();
+        eq("load() returns default availability 'online'", fresh.profile.availability, "online");
+        eq("load() defaults avatar to null", fresh.profile.avatar, null);
+        check("load() has empty posts array", Array.isArray(fresh.posts) && fresh.posts.length === 0);
+        check("load() seeds default reminders", fresh.reminders.items.length >= 5);
+        eq("default reminders start with breakfast", fresh.reminders.items[0].text, "Eat breakfast");
+        check("reminders.checked starts empty", Object.keys(fresh.reminders.checked).length === 0);
+
+        // --- Store: save + reload round-trip ---
+        fresh.profile.name = "Ada";
+        fresh.profile.status = "Hello world";
+        fresh.posts.unshift({ id: "p1", text: "first!", images: [], likes: 2, liked: true, createdAt: 1700000000000 });
+        check("save() succeeds", Store.save(fresh) === true);
+
+        var reloaded = Store.load();
+        eq("reload keeps profile name", reloaded.profile.name, "Ada");
+        eq("reload keeps status", reloaded.profile.status, "Hello world");
+        eq("reload keeps one post", reloaded.posts.length, 1);
+        eq("reload keeps like count", reloaded.posts[0].likes, 2);
+        eq("reload keeps post text", reloaded.posts[0].text, "first!");
+
+        // --- Store: albums round-trip ---
+        var withAlbums = Store.load();
+        check("fresh load has empty albums array", Array.isArray(withAlbums.albums) && withAlbums.albums.length === 0);
+        withAlbums.albums.unshift({ id: "a1", name: "Trip", images: ["data:img1"], createdAt: 1700000000000 });
+        withAlbums.albums.unshift({ id: "a0", name: "Feed Photos", images: ["data:feed1"], createdAt: 1700000000001 });
+        Store.save(withAlbums);
+        var albReload = Store.load();
+        eq("reload keeps both albums", albReload.albums.length, 2);
+        eq("reload keeps album name", albReload.albums[1].name, "Trip");
+        eq("reload keeps album image", albReload.albums[1].images[0], "data:img1");
+        eq("reload keeps the default album by name", albReload.albums[0].name, "Feed Photos");
+
+        // --- Store: todos round-trip ---
+        var withTodos = Store.load();
+        check("fresh load has empty todos array", Array.isArray(withTodos.todos) && withTodos.todos.length === 0);
+        withTodos.todos.push({ id: "t1", text: "Buy milk", done: false, createdAt: 1700000000000 });
+        withTodos.todos.push({ id: "t2", text: "Walk dog", done: true, createdAt: 1700000000001 });
+        Store.save(withTodos);
+        var todoReload = Store.load();
+        eq("reload keeps two todos", todoReload.todos.length, 2);
+        eq("reload keeps todo text", todoReload.todos[0].text, "Buy milk");
+        eq("reload keeps todo done flag", todoReload.todos[1].done, true);
+
+        // --- Store: sheets round-trip ---
+        var withSheets = Store.load();
+        check("fresh load has empty sheets array", Array.isArray(withSheets.sheets) && withSheets.sheets.length === 0);
+        withSheets.sheets.unshift({
+            id: "s1", name: "Budget",
+            columns: ["Item", "Amount"],
+            rows: [["Rent", "1200"], ["Food", "300"]],
+            createdAt: 1700000000000
+        });
+        Store.save(withSheets);
+        var sheetReload = Store.load();
+        eq("reload keeps one sheet", sheetReload.sheets.length, 1);
+        eq("reload keeps sheet name", sheetReload.sheets[0].name, "Budget");
+        eq("reload keeps columns", sheetReload.sheets[0].columns.length, 2);
+        eq("reload keeps a cell value", sheetReload.sheets[0].rows[0][1], "1200");
+
+        // --- Store: reminders round-trip (item list + checked map) ---
+        var withRem = Store.load();
+        withRem.reminders.items = [{ id: "x1", text: "Drink water" }];
+        withRem.reminders.checkedDate = "2026-05-31";
+        withRem.reminders.checked = { x1: true };
+        Store.save(withRem);
+        var remReload = Store.load();
+        eq("reload keeps reminder item", remReload.reminders.items[0].text, "Drink water");
+        eq("reload keeps checkedDate", remReload.reminders.checkedDate, "2026-05-31");
+        eq("reload keeps checked map", remReload.reminders.checked.x1, true);
+
+        // --- Store: a save with no reminders block gets seeded ---
+        localStorage.setItem(Store.KEY, JSON.stringify({ profile: { name: "Old" }, posts: [] }));
+        var seeded = Store.load();
+        check("legacy save gets default reminders seeded", seeded.reminders.items.length >= 5);
+
+        // --- partial blob is merged with defaults ---
+        localStorage.setItem(Store.KEY, JSON.stringify({ profile: { name: "Partial" } }));
+        var merged = Store.load();
+        eq("partial save still gets availability default", merged.profile.availability, "online");
+        eq("partial save still gets avatar default", merged.profile.avatar, null);
+        check("partial save still gets posts array", Array.isArray(merged.posts));
+        check("partial save still gets albums array", Array.isArray(merged.albums));
+        check("partial save still gets todos array", Array.isArray(merged.todos));
+        check("partial save still gets sheets array", Array.isArray(merged.sheets));
+
+        // --- Store: corrupt blob falls back to defaults ---
+        localStorage.setItem(Store.KEY, "{not valid json");
+        var recovered = Store.load();
+        check("corrupt data recovers to fresh state", recovered.profile.name === "" && recovered.posts.length === 0);
+
+        // --- Store: clear ---
+        Store.save(Store.freshState());
+        Store.clear();
+        check("clear() removes the key", localStorage.getItem(Store.KEY) === null);
+
+        // --- app.js helpers ---
+        var H = window.IntrovertsSocialSpace._internals;
+        eq("initial('') is default emoji", H.initial(""), "🙂");
+        eq("initial('ada') uppercases", H.initial("ada"), "A");
+        eq("initial('  bob') trims", H.initial("  bob"), "B");
+
+        eq("relTime(now) is 'just now'", H.relTime(Date.now()), "just now");
+        eq("relTime(2 min ago) is '2m'", H.relTime(Date.now() - 2 * 60 * 1000), "2m");
+        eq("relTime(3 h ago) is '3h'", H.relTime(Date.now() - 3 * 60 * 60 * 1000), "3h");
+        eq("relTime(2 d ago) is '2d'", H.relTime(Date.now() - 2 * 24 * 60 * 60 * 1000), "2d");
+
+        // --- CSV: escaping ---
+        eq("csvEscape plain", H.csvEscape("hello"), "hello");
+        eq("csvEscape with comma", H.csvEscape("a,b"), '"a,b"');
+        eq("csvEscape with quote", H.csvEscape('say "hi"'), '"say ""hi"""');
+        eq("csvEscape with newline", H.csvEscape("a\nb"), '"a\nb"');
+
+        // --- CSV: sheet -> csv ---
+        var sheetForCsv = { columns: ["Item", "Amount"], rows: [["Rent", "1200"], ["Tea, bags", "5"]] };
+        eq("sheetToCsv output",
+           H.sheetToCsv(sheetForCsv),
+           'Item,Amount\r\nRent,1200\r\n"Tea, bags",5');
+
+        // --- CSV: parse (quotes, commas, doubled quotes, CRLF) ---
+        var parsed = H.csvParse('a,b\r\n"x,y","he said ""hi"""\n1,2\n');
+        eq("csvParse row count (trailing newline dropped)", parsed.length, 3);
+        eq("csvParse header", parsed[0].join("|"), "a|b");
+        eq("csvParse quoted comma", parsed[1][0], "x,y");
+        eq("csvParse doubled quotes", parsed[1][1], 'he said "hi"');
+
+        // --- CSV: round-trip through gridFromCsv ---
+        var grid = H.gridFromCsv(H.sheetToCsv(sheetForCsv));
+        eq("gridFromCsv columns", grid.columns.join("|"), "Item|Amount");
+        eq("gridFromCsv keeps quoted cell", grid.rows[1][0], "Tea, bags");
+        eq("gridFromCsv pads/truncates rows to width", grid.rows[0].length, 2);
+        check("gridFromCsv empty text -> null", H.gridFromCsv("") === null);
+
+        // --- CSV: append body (header skipped, fitted to width) ---
+        var body = H.rowsFromCsvBody("Item,Amount\r\nGym,40\r\nBus,2", 2);
+        eq("rowsFromCsvBody skips header -> 2 rows", body.length, 2);
+        eq("rowsFromCsvBody first appended row", body[0].join("|"), "Gym|40");
+        eq("rowsFromCsvBody fits narrower width", H.rowsFromCsvBody("a,b,c\n1,2,3", 2)[0].join("|"), "1|2");
+        eq("rowsFromCsvBody pads wider width", H.rowsFromCsvBody("a\n1", 3)[0].join("|"), "1||");
+        eq("rowsFromCsvBody header-only -> 0 rows", H.rowsFromCsvBody("a,b", 2).length, 0);
+
+        // --- date helpers ---
+        check("todayStr is YYYY-MM-DD", /^\d{4}-\d{2}-\d{2}$/.test(H.todayStr()));
+        check("yesterdayStr is YYYY-MM-DD", /^\d{4}-\d{2}-\d{2}$/.test(H.yesterdayStr()));
+        check("yesterday differs from today", H.yesterdayStr() !== H.todayStr());
+
+        // --- mascot line builder ---
+        var ml = H.buildMascotLines();
+        check("buildMascotLines returns a non-empty list", Array.isArray(ml) && ml.length > 0);
+        check("buildMascotLines entries are strings", ml.every(function (l) { return typeof l === "string" && l.length; }));
+
+        // --- mascot designs ---
+        var designs = H.mascotDesigns();
+        var keys = designs.map(function (d) { return d.key; });
+        check("has all requested designs", ["tsquare", "ruler", "floppy", "card", "sun", "moon"].every(function (k) { return keys.indexOf(k) >= 0; }));
+        check("each design builds an <svg>", designs.every(function (d) { return d.build().indexOf("<svg") === 0; }));
+        eq("default mascot design is blob", Store.load().mascot.design, "blob");
+
+        // --- Store: mascot round-trip ---
+        var withMascot = Store.load();
+        withMascot.mascot = { design: "moon", dismissed: true, x: 120, y: 80 };
+        Store.save(withMascot);
+        var mReload = Store.load();
+        eq("reload keeps mascot design", mReload.mascot.design, "moon");
+        eq("reload keeps mascot dismissed", mReload.mascot.dismissed, true);
+        eq("reload keeps mascot x", mReload.mascot.x, 120);
+
+        // --- game: mascot card AI ---
+        eq("mascotPick beats the prediction with smallest winner",
+           H.mascotPick([2, 5, 7], [3, 4, 6], 4), 5);
+        eq("mascotPick sacrifices lowest when it can't beat prediction",
+           H.mascotPick([1, 2, 3], [3, 4, 7], 7), 1);
+        check("mascotPick (no prediction) beats the hand average",
+           H.mascotPick([1, 6, 7], [2, 3, 4], null) === 6);
+
+        // --- game: stats + history seed/round-trip ---
+        var freshGame = Store.load();
+        eq("game defaults: 0 matches", freshGame.game.stats.matches, 0);
+        check("game history starts empty", Array.isArray(freshGame.game.history) && freshGame.game.history.length === 0);
+        var bigHist = []; for (var i = 0; i < 130; i++) bigHist.push([1, 2, 3, 4, 5, 6, 7]);
+        freshGame.game.history = bigHist;
+        Store.save(freshGame);
+        eq("history is capped at 100 on load", Store.load().game.history.length, 100);
+
+        // Restore real data.
+        if (backup !== null) localStorage.setItem(Store.KEY, backup);
+        else localStorage.removeItem(Store.KEY);
+
+        // Summary
+        var summary = document.getElementById("summary");
+        summary.textContent = passed + " passed, " + failed + " failed.";
+        summary.className = failed === 0 ? "pass" : "fail";
+    })();
+    </script>
+</body>
+</html>

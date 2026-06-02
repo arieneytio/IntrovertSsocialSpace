@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Introverts' Social Space — your private social feed</title>
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+    <!-- Top bar -->
+    <header class="topbar">
+        <div class="topbar-inner">
+            <div class="topbar-brand">
+                <h1 class="logo">Introverts' Social Space</h1>
+                <span class="tagline">your private, offline social feed</span>
+            </div>
+
+            <div class="topbar-profile">
+                <input class="profile-name" id="profileName" type="text"
+                       placeholder="Your name" maxlength="40" autocomplete="off">
+                <div class="avatar-wrap">
+                    <button class="avatar avatar-btn" id="avatar" type="button"
+                            title="Change profile picture">🙂</button>
+                    <button class="avatar-remove" id="avatarRemove" type="button"
+                            title="Remove profile picture" hidden>✕</button>
+                </div>
+                <input id="avatarInput" type="file" accept="image/*" hidden>
+            </div>
+        </div>
+
+        <!-- Tabs live on the top bar -->
+        <nav class="tabs" role="tablist">
+            <button class="tab is-active" id="tabFeed" role="tab" data-tab="feed">Feed</button>
+            <button class="tab" id="tabAlbums" role="tab" data-tab="albums">Albums</button>
+            <button class="tab" id="tabSheets" role="tab" data-tab="sheets">Sheets</button>
+            <button class="tab" id="tabPlay" role="tab" data-tab="play">Play with me</button>
+        </nav>
+    </header>
+
+    <main class="layout">
+        <!-- Left column: profile + to-do -->
+        <div class="side-left">
+            <aside class="profile-card">
+                <label class="status-label" for="statusInput">Status</label>
+                <div class="status-row">
+                    <button class="status-dot" id="statusDot" title="Click to cycle availability"></button>
+                    <input class="status-input" id="statusInput" type="text"
+                           placeholder="Set a status…" maxlength="80" autocomplete="off">
+                </div>
+
+                <div class="profile-stats">
+                    <span><strong id="postCount">0</strong> posts</span>
+                    <span><strong id="albumCount">0</strong> albums</span>
+                    <span><strong id="todoCount">0</strong> to-do</span>
+                    <span><strong id="sheetCount">0</strong> sheets</span>
+                </div>
+            </aside>
+
+            <!-- To-Do (left panel) -->
+            <aside class="todo-card" id="todosPanel">
+                <h2 class="side-title">To-Do</h2>
+                <form id="newTodoForm" class="new-todo">
+                    <input id="newTodoText" class="new-todo-input" type="text"
+                           placeholder="Add a task…" maxlength="200" autocomplete="off">
+                    <button class="btn btn-primary" type="submit">Add</button>
+                </form>
+
+                <div class="todo-filters" role="tablist">
+                    <button class="todo-filter is-active" data-filter="all" type="button">All</button>
+                    <button class="todo-filter" data-filter="active" type="button">Active</button>
+                    <button class="todo-filter" data-filter="done" type="button">Completed</button>
+                </div>
+
+                <ul id="todoList" class="todo-list"></ul>
+
+                <p id="todosEmptyState" class="empty-state">
+                    Nothing to do yet — add your first task above. ✅
+                </p>
+
+                <div id="todoFooter" class="todo-footer" hidden>
+                    <span id="todoRemaining">0 left</span>
+                    <button id="clearCompletedBtn" class="btn btn-ghost" type="button">Clear completed</button>
+                </div>
+            </aside>
+        </div>
+
+        <!-- Center: panels -->
+        <section class="feed-column">
+            <!-- Feed panel -->
+            <div id="feedPanel" class="panel">
+                <!-- Composer -->
+                <div class="composer">
+                    <textarea id="composerText" class="composer-text"
+                              placeholder="What's on your mind?" maxlength="500"></textarea>
+
+                    <div id="previewStrip" class="preview-strip" hidden></div>
+
+                    <div class="composer-actions">
+                        <label class="btn btn-ghost" for="imageInput">
+                            📷 Add pictures
+                        </label>
+                        <input id="imageInput" type="file" accept="image/*" multiple hidden>
+
+                        <span class="char-count"><span id="charCount">0</span>/500</span>
+                        <button id="postBtn" class="btn btn-primary" type="button">Post</button>
+                    </div>
+                </div>
+
+                <!-- Feed -->
+                <div id="feed" class="feed"></div>
+
+                <p id="emptyState" class="empty-state">
+                    Nothing here yet — share what's on your mind above. 👆
+                </p>
+            </div>
+
+            <!-- Albums panel -->
+            <div id="albumsPanel" class="panel" hidden>
+                <!-- Album list view -->
+                <div id="albumListView">
+                    <form id="newAlbumForm" class="new-album">
+                        <input id="newAlbumName" class="new-album-input" type="text"
+                               placeholder="New album name…" maxlength="60" autocomplete="off">
+                        <button class="btn btn-primary" type="submit">Create album</button>
+                    </form>
+
+                    <div id="albumGrid" class="album-grid"></div>
+
+                    <p id="albumsEmptyState" class="empty-state">
+                        No albums yet — create one above to organize your pictures. 📁
+                    </p>
+                </div>
+
+                <!-- Single album detail view -->
+                <div id="albumDetailView" hidden>
+                    <div class="album-detail-head">
+                        <button id="albumBackBtn" class="btn btn-ghost" type="button">← Albums</button>
+                        <input id="albumTitleInput" class="album-title" type="text"
+                               maxlength="60" autocomplete="off" title="Rename album">
+                        <label class="btn btn-ghost" for="albumImageInput">📷 Add pictures</label>
+                        <input id="albumImageInput" type="file" accept="image/*" multiple hidden>
+                        <button id="albumDeleteBtn" class="btn btn-ghost danger" type="button">🗑 Delete album</button>
+                    </div>
+
+                    <div id="albumImages" class="album-images"></div>
+
+                    <p id="albumDetailEmptyState" class="empty-state">
+                        This album is empty — add some pictures. 🖼
+                    </p>
+                </div>
+            </div>
+
+            <!-- Sheets panel -->
+            <div id="sheetsPanel" class="panel" hidden>
+                <!-- Sheet list view -->
+                <div id="sheetListView">
+                    <form id="newSheetForm" class="new-sheet">
+                        <input id="newSheetName" class="new-sheet-input" type="text"
+                               placeholder="New spreadsheet name… (e.g. Budget, Weight log)"
+                               maxlength="60" autocomplete="off">
+                        <button class="btn btn-primary" type="submit">Create spreadsheet</button>
+                        <label class="btn btn-ghost" for="importNewCsvInput" title="Create a new sheet from a CSV file">⬆ Import CSV</label>
+                        <input id="importNewCsvInput" type="file" accept=".csv,text/csv" hidden>
+                    </form>
+
+                    <div id="sheetGrid" class="sheet-grid"></div>
+
+                    <p id="sheetsEmptyState" class="empty-state">
+                        No spreadsheets yet — create one above to track money, weight, or anything. 📊
+                    </p>
+                </div>
+
+                <!-- Single sheet detail view -->
+                <div id="sheetDetailView" hidden>
+                    <div class="sheet-detail-head">
+                        <button id="sheetBackBtn" class="btn btn-ghost" type="button">← Sheets</button>
+                        <input id="sheetTitleInput" class="sheet-title" type="text"
+                               maxlength="60" autocomplete="off" title="Rename spreadsheet">
+                        <button id="addColumnBtn" class="btn btn-ghost" type="button">+ Column</button>
+                        <button id="addRowBtn" class="btn btn-ghost" type="button">+ Row</button>
+                        <button id="exportCsvBtn" class="btn btn-ghost" type="button" title="Download this sheet as CSV">⬇ Export CSV</button>
+                        <label class="btn btn-ghost" for="importCsvInput" title="Replace this sheet's contents from a CSV file">⬆ Import CSV</label>
+                        <input id="importCsvInput" type="file" accept=".csv,text/csv" hidden>
+                        <label class="btn btn-ghost" for="appendCsvInput" title="Add a CSV's rows to the end of this sheet (its header row is skipped)">➕ Append CSV</label>
+                        <input id="appendCsvInput" type="file" accept=".csv,text/csv" hidden>
+                        <button id="sheetDeleteBtn" class="btn btn-ghost danger" type="button">🗑 Delete</button>
+                    </div>
+
+                    <div id="sheetTableWrap" class="sheet-table-wrap"></div>
+
+                    <p id="sheetEmptyState" class="empty-state">
+                        No columns yet — click “+ Column” to start your spreadsheet. 🧮
+                    </p>
+                </div>
+            </div>
+
+            <!-- Play with me panel (card duel vs the mascot) -->
+            <div id="playPanel" class="panel" hidden>
+                <div class="game">
+                    <div class="game-scorebar">
+                        <div class="gsb-side">
+                            <span class="gsb-name">You</span>
+                            <span class="gsb-score" id="gameYouScore">0</span>
+                        </div>
+                        <div class="gsb-round" id="gameRound">Round 1 of 7</div>
+                        <div class="gsb-side">
+                            <span class="gsb-score" id="gameMascotScore">0</span>
+                            <span class="gsb-name">Mascot</span>
+                        </div>
+                    </div>
+
+                    <div class="game-mascot-area">
+                        <div class="game-mascot">
+                            <div class="game-mascot-face" id="gameMascotFace" aria-hidden="true"></div>
+                            <div class="game-bubble" id="gameBubble">Let's play!</div>
+                        </div>
+                        <div class="game-mascot-hand" id="gameMascotHand" aria-hidden="true"></div>
+                    </div>
+
+                    <div class="game-reveal" id="gameReveal"></div>
+
+                    <div class="game-hand" id="gameHand"></div>
+
+                    <div class="game-foot">
+                        <div class="game-foot-btns">
+                            <button class="btn btn-primary" id="gameNewBtn" type="button">New game</button>
+                            <button class="btn btn-ghost" id="gameResetBtn" type="button">Reset score</button>
+                        </div>
+                        <span class="game-stats" id="gameStats"></span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Right: daily reminders -->
+        <aside class="reminders-card">
+            <div class="reminders-head">
+                <h2 class="reminders-title">Daily reminders</h2>
+                <span class="reminders-date" id="remindersDate"></span>
+            </div>
+
+            <ul id="reminderList" class="reminder-list"></ul>
+
+            <p id="remindersEmptyState" class="empty-state" hidden>
+                No reminders — add one below. 🔔
+            </p>
+
+            <form id="newReminderForm" class="new-reminder">
+                <input id="newReminderText" class="new-reminder-input" type="text"
+                       placeholder="Add a reminder…" maxlength="80" autocomplete="off">
+                <button class="btn btn-ghost" type="submit" title="Add reminder">+</button>
+            </form>
+
+            <div class="reminders-foot">
+                <span id="reminderProgress">0 of 0 done today</span>
+            </div>
+        </aside>
+    </main>
+
+    <!-- Chibi mascot: draggable, dismissable, with selectable designs -->
+    <button class="mascot-summon" id="mascotSummon" type="button" title="Summon mascot" hidden>✨</button>
+    <div class="mascot" id="mascot">
+        <div class="mascot-bubble" id="mascotBubble" role="status" aria-live="polite">Hi there! 👋</div>
+        <div class="mascot-controls">
+            <button class="mascot-ctrl" id="mascotDesignBtn" type="button" title="Change design">🎨</button>
+            <button class="mascot-ctrl" id="mascotDismissBtn" type="button" title="Hide mascot">✕</button>
+        </div>
+        <div class="mascot-picker" id="mascotPicker" hidden></div>
+        <div class="mascot-body" id="mascotBody" title="Drag me, or click for a new thought!" aria-hidden="true"></div>
+    </div>
+
+    <!-- Post template -->
+    <template id="postTemplate">
+        <article class="post">
+            <header class="post-head">
+                <span class="post-avatar"></span>
+                <div class="post-meta">
+                    <span class="post-author"></span>
+                    <time class="post-time"></time>
+                </div>
+                <button class="post-delete" title="Delete post">✕</button>
+            </header>
+            <p class="post-text"></p>
+            <div class="post-images"></div>
+            <footer class="post-foot">
+                <button class="like-btn">🤍 <span class="like-count">0</span></button>
+            </footer>
+        </article>
+    </template>
+
+    <script src="js/storage.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
