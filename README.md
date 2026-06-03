@@ -1,187 +1,148 @@
-# Introverts' Social Space
+# AHP Decision Analyzer
 
-A tiny social-media-style feed that runs **completely offline**, straight from
-disk — no server, no account, no internet. Everything you write and every
-picture you add is stored locally in your browser (`localStorage`), so it stays
-on your machine and is there again next time you open it.
+A multi-criteria decision-analysis tool implementing the **Analytic Hierarchy Process (AHP)**
+with support for a **nested criteria hierarchy** (criteria → sub-criteria → …). Built with
+vanilla HTML, CSS, and JavaScript — no frameworks, no build step.
 
-Think of it as a private journal that *looks* like a social app.
+![Vanilla JS](https://img.shields.io/badge/stack-vanilla%20JS-f7df1e) ![No build](https://img.shields.io/badge/build-none-success) ![License](https://img.shields.io/badge/license-MIT-blue)
 
-## What you can do
+## Features
 
-- **Set your name and profile picture** — your name and avatar live in the top
-  bar (top-right). Click the avatar to upload a picture; a small ✕ removes it and
-  falls back to your initial. The picture also shows on every post you make.
-  Uploads are **auto-cropped to a square and downscaled to 256×256** (saved as a
-  compact JPEG), so even a huge photo only takes a few tens of KB. You can also
-  **turn any existing picture into your avatar** — use the 👤 button on an album
-  thumbnail, or open any photo full-screen and click **"Set as profile picture"**.
-- **Daily reminders** — a panel on the right with a checklist of daily habits
-  (eat breakfast/lunch/supper, exercise, study something new, clean your room,
-  organize your things…). Tick them off through the day; the checks **reset
-  automatically each new day**. Add your own reminders, rename them inline, or
-  remove ones you don't need. Complete them all and you build a **🔥 day streak**
-  (it counts consecutive days and breaks if you miss a whole day).
-- **Play with me** — a tab with a simple card duel against the mascot. Each side
-  holds cards ranked 1–7 (Magikarp → Mewtwo); over 7 rounds you each play one
-  card per round and the higher rank wins the round — most round-wins takes the
-  match. No armor, no power-ups, just a **running score** plus a cumulative
-  win/loss/tie **record**. The mascot **learns from your last 100 games**
-  (predicting what you tend to play at each round and trying to counter it), and
-  it **talks every round** with excited, win/lose/tie-specific lines (the mascot
-  sits on the right of the board). Played cards **deal in with a short reveal
-  animation** and the winner gets a quick ring. The tab **widens to full width**
-  (the side panels tuck away) so all seven cards fit comfortably. Fully offline —
-  cards are drawn with emoji, no images are downloaded. After you play, the
-  mascot takes a short **"thinking…"** pause, then its face-down card **flips
-  face-up** to reveal the round. Win the match and you get a **confetti burst** 🎉.
-- **Chibi mascot** — a friendly little character floats in the bottom-right with
-  a speech bubble. Click it for a new thought; it also refreshes on its own. Its
-  lines are **context-aware**: your reminder streak, nudges about reminders you
-  haven't done yet ("Don't forget to eat breakfast today!"), a task still on your
-  to-do list, suggestions to post a photo or start an album, questions about your
-  day, a nudge to pray, reflection prompts, and inspirational quotes.
-  - **Drag** it anywhere (its position is remembered), **hide** it with the ✕
-    (a ✨ summon button appears to bring it back), and pick a **design** with the
-    🎨 button: Blob, T-square, Ruler, Floppy disc, Card, Sun, or Moon — each a
-    cute face on the shape. The chosen design, position, and hidden state persist.
-- **Set a status** — a free-text line ("Out for coffee ☕") plus a colored
-  availability dot you click to cycle: 🟢 online → 🟠 away → 🔴 busy → ⚪ invisible.
-- **Post "what's on your mind"** — write up to 500 characters.
-- **Attach pictures** — one or many per post. They're read on-device and shown
-  in a tidy grid; click any image to view it full-screen.
-- **Like** your posts (🤍 → ❤️) and **delete** ones you don't want.
-- **Organize pictures into albums** — switch to the **Albums** tab to create
-  named albums, add pictures to each, rename or delete an album, and remove
-  individual pictures. Click any picture to view it full-screen. Pictures you
-  attach to a **feed post are auto-filed into a default "Feed Photos" album**
-  (identified by that name — if you rename or delete it, the next feed picture
-  just creates a fresh one), and any picture can be **moved to another album**
-  (⇄ on the thumbnail) — including a brand-new one created on the spot.
-- **Keep a to-do list** — a **panel on the left** (under your profile) lets you
-  add tasks, check them off, edit them inline, filter by All / Active / Completed,
-  and clear finished ones.
-- **Build spreadsheets** — the **Sheets** tab lets you create as many little
-  spreadsheets as you like (a budget, a weight log, anything). Add/rename/delete
-  columns and rows, edit any cell, and each numeric column gets an automatic
-  total at the bottom. **Export** any sheet to a `.csv` file or **import** a CSV
-  (create a new sheet from one, or replace an open sheet's contents).
-- Everything **persists** — close the tab, reopen later, it's all still there.
+- **Nested criteria hierarchy** — criteria → sub-criteria to any depth.
+- **Pairwise gauge** with ◀ / ▶ stepper buttons, a Saaty 1–9 legend, and the live ratio value (e.g. `3` or `1/3`).
+- **Live consistency** — a Consistency Ratio per comparison, flagged when CR > 10%.
+- **Multiple respondents** with a geometric-mean **Group** view for group decisions.
+- **Multiple projects**, each with its own description/notes, saved separately so nothing is lost.
+- **Export** to a multi-tab Excel (`.xlsx`) workbook or a CSV.
+- **Sample decisions** sidebar plus a fully-worked, loadable example.
+- 100% client-side — vanilla HTML/CSS/JS, no dependencies, no build, no server, no data leaves the browser.
 
-## Tabs
+## What it does
 
-The top bar carries four tabs (the To-Do list lives in the left column, not as a
-tab):
+AHP turns a messy "which option is best?" question into a structured, numeric ranking:
 
-- **Feed** — the composer and your timeline of posts.
-- **Albums** — create albums and drop pictures into them to keep your photos
-  organized separately from the feed.
-- **Sheets** — create editable spreadsheets for tracking money, weight, or
-  anything. Click a cell to type; the **Σ** row sums each numeric column (it's
-  lenient — `$1,200`, `70kg`, and `-15` all count). Add columns/rows, rename
-  headers, and delete what you don't need.
-  - **⬇ Export CSV** downloads the open sheet as a standard `.csv` (UTF-8 with a
-    BOM so Excel opens it cleanly).
-  - **⬆ Import CSV** in the detail view replaces the open sheet's contents from a
-    `.csv` file; **⬆ Import CSV** on the Sheets list creates a *new* sheet from a
-    file (named after the file). The first row is treated as column headers, and
-    quoted fields, embedded commas/newlines, and doubled quotes are all handled.
-  - **➕ Append CSV** adds a CSV's rows to the *end* of the open sheet without
-    touching its columns. The file's first row is treated as a header and
-    skipped, and each appended row is fitted to the sheet's column count
-    (extra cells dropped, missing cells left blank) — handy for adding a new
-    month's data to an existing log.
-- **Play with me** — a card duel against the mascot (see the feature list above).
+1. **Define the decision** — a goal, an optional description, a hierarchy of criteria (with optional sub-criteria), and the alternatives.
+2. **Compare** — for one or more respondents, make pairwise judgements on a Saaty 1–9 gauge: first weigh the criteria, then score the alternatives under every *leaf* criterion. All comparisons live in one tabbed panel, each tab showing a green/red consistency dot.
+3. **Read & export the results** — a ranked list, the propagated criteria weights, a full decision matrix, and one-click Excel/CSV download.
 
-## How to run
+Consistency is checked everywhere via Saaty's **Consistency Ratio (CR)**; anything above 10% is flagged.
 
-**Easiest:** double-click **`play.bat`** — it opens the app in your default
-browser. You can also just open `src/index.html` directly. It uses `file://`
-and needs no server.
+## Making comparisons
 
-**Optional (Python):** if you'd rather have a real `http://localhost` address,
-run:
+Each comparison uses a gauge centred on "equal". Drag it — or tap the **◀ / ▶** buttons — toward the
+option you consider more important; the further you go, the stronger the preference (Saaty intensity:
+1 = equal … 9 = extreme). The gauge shows its current value as a ratio — **3** means the left option
+is judged 3× as important, **1/3** means the right one is. A legend above the comparisons spells the
+scale out, and the **Group (avg)** view shows the aggregated value as a decimal (below 1 when the
+right option wins).
+
+## Projects
+
+Work on several decisions without losing any of them. The toolbar has a **Project** picker:
+
+- **Switch** projects from the dropdown — the one you're leaving is saved automatically first.
+- **＋ New** starts a fresh, empty project; **Rename**, **Duplicate**, and **Delete** manage the rest.
+
+Every project keeps its own goal, an optional **description / notes** field, criteria hierarchy,
+respondents, and judgements — all stored separately in `localStorage`, so switching never overwrites
+another project's work. **Load example** opens the worked demo in its *own* new project, leaving your
+current work untouched. A single-project save from an earlier version is migrated into the
+multi-project store automatically on first load.
+
+## Multiple respondents (group decisions)
+
+Add as many respondents as you like in the comparison step. Each keeps their **own** set of
+pairwise judgements, and you switch between them with the respondent chips. A **Group (avg)** view
+aggregates everyone using the **geometric mean of judgements** (Aggregation of Individual Judgements,
+AIJ) — the standard AHP method, which keeps the combined matrix reciprocal. The group view is
+read-only; the results panel shows whichever respondent (or the group) is currently selected.
+
+## Exporting results
+
+The Results panel has **Excel** and **CSV** download buttons. The Excel file is a real multi-tab
+`.xlsx` workbook — generated entirely in the browser (a hand-built Open XML package; no libraries,
+no server) — with one tab per view:
+
+| Tab | Contents |
+|-----|----------|
+| **Summary** | Goal, the view exported, and the final ranking (priority + %) |
+| **Criteria Weights** | Each leaf criterion's local and global weight |
+| **Decision Matrix** | Every alternative's local priority per leaf, plus the final score |
+| **Consistency** | CR, λmax and pass/fail for each comparison |
+| **By Respondent** | Cross-tab of each respondent's scores and the group average (when >1 respondent) |
+
+Numbers are stored as real, full-precision values (not rounded display text), so the spreadsheet
+can recompute from them. The CSV export packs the same sections into one UTF-8 file for tools that
+prefer CSV. Whichever respondent (or the **Group (avg)** view) is selected is the one exported.
+
+## Nested sub-criteria
+
+Any criterion can hold its own sub-criteria to arbitrary depth. Weights propagate down the tree:
 
 ```
-python serve.py        # then open http://localhost:8000
+global(node) = local(node within its parent) × global(parent)
 ```
 
-This serves the `src/` folder locally; it still never goes online.
+Alternatives are only compared against **leaf** criteria, and each leaf's *global* weight is what
+feeds the final aggregation — so the leaf weights always sum to 1 regardless of tree shape.
 
-## Project layout
+## Project structure
 
 ```
-New Project/
+AHP/
+├── index.html            # markup + script/style includes
+├── package.json          # metadata + static-server scripts
 ├── README.md
+├── LICENSE               # MIT
 ├── .gitignore
-├── play.bat                Launcher — opens src/index.html in default browser
-├── serve.py                Optional local Python server (not required)
-│
-├── src/
-│   ├── index.html          Markup + post template
-│   ├── css/
-│   │   └── styles.css      All styling (CSS variables up top to retheme)
-│   ├── js/
-│   │   ├── storage.js      localStorage read/write (single namespaced blob)
-│   │   └── app.js          UI logic: profile + avatar (crop/downscale), composer, feed, likes, albums, to-do, sheets, daily reminders + streak, chibi mascot, card-duel game, tabs, lightbox
-│   └── assets/             (room for icons/images if you add any)
-│
-└── tests/
-    └── test.html           Open in a browser to run the logic tests
+└── src/
+    ├── css/
+    │   └── styles.css    # all styling (dark theme, responsive)
+    └── js/
+        ├── ahp.js        # pure matrix math: eigenvector, CR, aggregation (window.AHP)
+        ├── tree.js       # criteria hierarchy + weight propagation (window.AHPTree)
+        └── app.js        # UI, state, projects, CSV/XLSX export, localStorage persistence
 ```
 
-## How your data is stored
+## Running it
 
-All state lives under one `localStorage` key (`offlinegram.v1` — the original
-name, kept so existing data survives the rename to Introverts' Social Space) as JSON:
+It's a static site — just open `index.html` in a browser. To serve it over HTTP (recommended so
+relative paths and `localStorage` behave like production):
 
-```json
-{
-  "profile": { "name": "...", "status": "...", "availability": "online",
-               "avatar": "data:image/... or null" },
-  "posts":   [ { "id": "...", "text": "...", "images": ["data:image/..."],
-                 "likes": 0, "liked": false, "createdAt": 1730000000000 } ],
-  "albums":  [ { "id": "...", "name": "Feed Photos",
-                 "images": ["data:image/..."], "createdAt": 1730000000000 } ],
-  "todos":   [ { "id": "...", "text": "Buy milk", "done": false,
-                 "createdAt": 1730000000000 } ],
-  "sheets":  [ { "id": "...", "name": "Budget",
-                 "columns": ["Item", "Amount"],
-                 "rows": [ ["Rent", "1200"], ["Food", "300"] ],
-                 "createdAt": 1730000000000 } ],
-  "reminders": { "items": [ { "id": "r1", "text": "Eat breakfast" } ],
-                 "checkedDate": "2026-06-01", "checked": { "r1": true },
-                 "streak": 3, "streakDate": "2026-06-01" },
-  "mascot":  { "design": "blob", "dismissed": false, "x": null, "y": null },
-  "game":    { "stats": { "matches": 0, "playerWins": 0, "mascotWins": 0, "ties": 0 },
-               "history": [ [4, 2, 7, 1, 5, 3, 6] ] }
-}
+```bash
+# Node (uses `serve`)
+npm start
+
+# or Python's built-in server
+npm run dev        # -> http://localhost:8000
+# equivalently: python3 -m http.server 8000
 ```
 
-The game's `history` keeps up to the last 100 finished matches (each entry is
-your card picks in round order); the mascot tallies those to predict and counter
-your next move.
+## How the math works
 
-The reminder `items` list persists; `checked` is wiped whenever `checkedDate`
-no longer matches today's local date, giving the daily reset. `streak` is
-credited the first time all reminders are completed on a day (`streakDate`
-tracks when), and is treated as broken if a whole day passes uncompleted.
+Priorities are computed in full double precision (the power iteration runs to machine precision,
+≈15–16 significant digits, with no intermediate rounding) and results are shown to **3 decimal
+places**, so they line up with a spreadsheet rather than being masked by display rounding.
 
-Images are stored inline as data URLs. Browser `localStorage` is typically
-limited to ~5–10 MB, so very large or very many photos can fill it up — the app
-will warn you if a save fails and rejects single images over 4 MB.
+| Quantity | Method |
+|----------|--------|
+| Priority weights | Principal eigenvector via power iteration (to machine precision) |
+| λ<sub>max</sub> | Mean of `(A·w)ᵢ / wᵢ` |
+| Consistency Index | `CI = (λmax − n) / (n − 1)` |
+| Consistency Ratio | `CR = CI / RI`, with Saaty's Random Index table |
+| Global leaf weight | Product of local weights along the path to the root |
+| Final score | `Σ_leaves  global_weight(leaf) × local_priority(alt, leaf)` |
+| Group aggregation | Element-wise **geometric mean** of every respondent's matrices (AIJ) |
 
-To wipe everything, clear site data for the page in your browser, or run
-`localStorage.removeItem("offlinegram.v1")` in the dev-tools console.
+A matrix is treated as acceptably consistent when **CR ≤ 0.10**.
 
 ## Notes
 
-- No build step, no dependencies, no tracking, no network calls.
-- Plain HTML / CSS / vanilla JavaScript; the only Python is the optional server.
-- Tested by opening `tests/test.html` (see below).
+- All state (goal, description, hierarchy, respondents, judgements) is auto-saved **per project** to `localStorage`, so a reload restores every project and reopens the one you were on.
+- A **sample-decisions sidebar** sits beside the form: pick one (e.g. hiring a candidate, picking a holiday) to auto-fill the goal, criteria and alternatives in the current project, then make your own comparisons.
+- **Load example** creates a **new project** with a fully-worked 2-level laptop-choice model and **two respondents** (Priya, performance-focused; Sam, budget-focused) so you can try the Group view immediately — your existing projects are kept.
+- Everything runs locally; **no data leaves the browser**.
 
-## Running the tests
+## License
 
-Open **`tests/test.html`** in a browser. It exercises the storage round-trip
-and the helper functions (relative-time formatting, avatar initials) and prints
-pass/fail results on the page.
+MIT — see [LICENSE](LICENSE).
