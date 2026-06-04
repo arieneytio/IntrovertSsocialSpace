@@ -1,1519 +1,2386 @@
-/* app.js — UI + state for the AHP Decision Analyzer (with nested sub-criteria) */
+/* app.js — UI logic for Introverts' Social Space.
+ *
+ * Reads/writes through the Store module (storage.js). No network, no server;
+ * pictures are read with FileReader into data URLs so they persist as text.
+ */
 (function () {
-  "use strict";
+    "use strict";
 
-  const PROJECTS_KEY = "ahp-projects-v1";   // registry of all projects
-  const LEGACY_KEY = "ahp-analyzer-v2";     // single-project key from earlier versions
+    // ---- State ----
+    var state = Store.load();
+    var pendingImages = []; // data URLs staged in the composer, not yet posted
+    var openAlbumId = null; // id of the album currently shown in detail view, or null
+    var todoFilter = "all"; // all | active | done
+    var openSheetId = null; // id of the spreadsheet currently open, or null
 
-  // ---- State -------------------------------------------------------------
-  // `state` is the live working copy of the *active* project. Each project's
-  // data is persisted separately in the registry so switching never loses work.
-  const state = {
-    goal: "",
-    description: "",             // free-text notes for this project
-    tree: { id: "root", name: "Goal", children: [] }, // root.children = top-level criteria
-    alternatives: [],            // string[]
-    // One entry per respondent; each holds that person's judgement matrices:
-    //   { id, name, criteriaMatrices: {nodeId->matrix}, altMatrices: {leafId->matrix} }
-    respondents: [],
-    activeRespondent: null,      // respondent id, or "group" for the aggregated view
-    activeCompareKey: null,      // "crit:<nodeId>" | "alt:<leafId>"
-    nextId: 1,
-    built: false,
-  };
+    // Availability cycle for the status dot.
+    var AVAILABILITY = ["online", "away", "busy", "invis"];
 
-  // Saaty verbal descriptors keyed by intensity (1..9).
-  const VERBAL = {
-    1: "Equal importance",
-    2: "Equal to moderate",
-    3: "Moderate importance",
-    4: "Moderate to strong",
-    5: "Strong importance",
-    6: "Strong to very strong",
-    7: "Very strong importance",
-    8: "Very strong to extreme",
-    9: "Extreme importance",
-  };
+    // Cap image size we accept so we don't blow the localStorage quota.
+    var MAX_IMAGE_BYTES = 4 * 1024 * 1024; // 4 MB per file
 
-  const $ = (id) => document.getElementById(id);
+    // ---- Element handles ----
+    var el = {
+        profileName: document.getElementById("profileName"),
+        statusInput: document.getElementById("statusInput"),
+        statusDot: document.getElementById("statusDot"),
+        avatar: document.getElementById("avatar"),
+        avatarInput: document.getElementById("avatarInput"),
+        avatarRemove: document.getElementById("avatarRemove"),
 
-  function newId() {
-    return "n" + state.nextId++;
-  }
+        // Daily reminders
+        remindersDate: document.getElementById("remindersDate"),
+        reminderList: document.getElementById("reminderList"),
+        remindersEmptyState: document.getElementById("remindersEmptyState"),
+        newReminderForm: document.getElementById("newReminderForm"),
+        newReminderText: document.getElementById("newReminderText"),
+        reminderProgress: document.getElementById("reminderProgress"),
 
-  // ---- Projects + persistence --------------------------------------------
-  let projects = [];   // [{ id, name, updatedAt, data }]
-  let activeId = null;
+        // Mascot
+        mascot: document.getElementById("mascot"),
+        mascotBubble: document.getElementById("mascotBubble"),
+        mascotBody: document.getElementById("mascotBody"),
+        mascotControls: document.querySelector(".mascot-controls"),
+        mascotDesignBtn: document.getElementById("mascotDesignBtn"),
+        mascotDismissBtn: document.getElementById("mascotDismissBtn"),
+        mascotPicker: document.getElementById("mascotPicker"),
+        mascotSummon: document.getElementById("mascotSummon"),
+        postCount: document.getElementById("postCount"),
+        albumCount: document.getElementById("albumCount"),
+        todoCount: document.getElementById("todoCount"),
+        sheetCount: document.getElementById("sheetCount"),
+        composerText: document.getElementById("composerText"),
+        charCount: document.getElementById("charCount"),
+        imageInput: document.getElementById("imageInput"),
+        previewStrip: document.getElementById("previewStrip"),
+        postBtn: document.getElementById("postBtn"),
+        feed: document.getElementById("feed"),
+        emptyState: document.getElementById("emptyState"),
+        postTemplate: document.getElementById("postTemplate"),
 
-  function projectId() {
-    return "proj-" + Date.now().toString(36) + "-" + Math.floor(Math.random() * 1e6).toString(36);
-  }
-  function activeProject() {
-    return projects.find((p) => p.id === activeId) || null;
-  }
-  function blankData() {
-    return {
-      goal: "", description: "", tree: { id: "root", name: "Goal", children: [] }, alternatives: [],
-      respondents: [], activeRespondent: null, activeCompareKey: null, nextId: 1, built: false,
+        // Tabs + panels
+        tabFeed: document.getElementById("tabFeed"),
+        tabAlbums: document.getElementById("tabAlbums"),
+        tabSheets: document.getElementById("tabSheets"),
+        tabPlay: document.getElementById("tabPlay"),
+        feedPanel: document.getElementById("feedPanel"),
+        albumsPanel: document.getElementById("albumsPanel"),
+        todosPanel: document.getElementById("todosPanel"),
+        sheetsPanel: document.getElementById("sheetsPanel"),
+        playPanel: document.getElementById("playPanel"),
+        layout: document.querySelector(".layout"),
+
+        // Play with me (game)
+        gameYouScore: document.getElementById("gameYouScore"),
+        gameMascotScore: document.getElementById("gameMascotScore"),
+        gameRound: document.getElementById("gameRound"),
+        gameMascotFace: document.getElementById("gameMascotFace"),
+        gameBubble: document.getElementById("gameBubble"),
+        gameMascotHand: document.getElementById("gameMascotHand"),
+        gameReveal: document.getElementById("gameReveal"),
+        gameHand: document.getElementById("gameHand"),
+        gameNewBtn: document.getElementById("gameNewBtn"),
+        gameResetBtn: document.getElementById("gameResetBtn"),
+        gameStats: document.getElementById("gameStats"),
+
+        // To-Do
+        newTodoForm: document.getElementById("newTodoForm"),
+        newTodoText: document.getElementById("newTodoText"),
+        todoList: document.getElementById("todoList"),
+        todosEmptyState: document.getElementById("todosEmptyState"),
+        todoFooter: document.getElementById("todoFooter"),
+        todoRemaining: document.getElementById("todoRemaining"),
+        clearCompletedBtn: document.getElementById("clearCompletedBtn"),
+
+        // Albums — list view
+        albumListView: document.getElementById("albumListView"),
+        newAlbumForm: document.getElementById("newAlbumForm"),
+        newAlbumName: document.getElementById("newAlbumName"),
+        albumGrid: document.getElementById("albumGrid"),
+        albumsEmptyState: document.getElementById("albumsEmptyState"),
+
+        // Albums — detail view
+        albumDetailView: document.getElementById("albumDetailView"),
+        albumBackBtn: document.getElementById("albumBackBtn"),
+        albumTitleInput: document.getElementById("albumTitleInput"),
+        albumImageInput: document.getElementById("albumImageInput"),
+        albumDeleteBtn: document.getElementById("albumDeleteBtn"),
+        albumImages: document.getElementById("albumImages"),
+        albumDetailEmptyState: document.getElementById("albumDetailEmptyState"),
+
+        // Sheets — list view
+        newSheetForm: document.getElementById("newSheetForm"),
+        newSheetName: document.getElementById("newSheetName"),
+        sheetGrid: document.getElementById("sheetGrid"),
+        sheetsEmptyState: document.getElementById("sheetsEmptyState"),
+        importNewCsvInput: document.getElementById("importNewCsvInput"),
+
+        // Sheets — detail view
+        sheetListView: document.getElementById("sheetListView"),
+        sheetDetailView: document.getElementById("sheetDetailView"),
+        sheetBackBtn: document.getElementById("sheetBackBtn"),
+        sheetTitleInput: document.getElementById("sheetTitleInput"),
+        addColumnBtn: document.getElementById("addColumnBtn"),
+        addRowBtn: document.getElementById("addRowBtn"),
+        exportCsvBtn: document.getElementById("exportCsvBtn"),
+        importCsvInput: document.getElementById("importCsvInput"),
+        appendCsvInput: document.getElementById("appendCsvInput"),
+        sheetDeleteBtn: document.getElementById("sheetDeleteBtn"),
+        sheetTableWrap: document.getElementById("sheetTableWrap"),
+        sheetEmptyState: document.getElementById("sheetEmptyState")
     };
-  }
-  // Snapshot the live state into a plain object for storage.
-  function snapshotState() {
-    return {
-      goal: state.goal, description: state.description, tree: state.tree, alternatives: state.alternatives,
-      respondents: state.respondents, activeRespondent: state.activeRespondent,
-      activeCompareKey: state.activeCompareKey, nextId: state.nextId, built: state.built,
-    };
-  }
-  // Normalise a project's data (migrate legacy top-level matrices into a respondent).
-  function normalizeData(d) {
-    d = d || blankData();
-    if (!d.tree) d.tree = { id: "root", name: "Goal", children: [] };
-    if (!Array.isArray(d.respondents) || d.respondents.length === 0) {
-      d.respondents = [{
-        id: "r-1", name: "Respondent 1",
-        criteriaMatrices: d.criteriaMatrices || {}, altMatrices: d.altMatrices || {},
-      }];
-    }
-    delete d.criteriaMatrices;
-    delete d.altMatrices;
-    return d;
-  }
-  // Load a data object into the live state.
-  function applyStateData(d) {
-    d = normalizeData(d);
-    state.goal = d.goal || "";
-    state.description = d.description || "";
-    state.tree = d.tree;
-    state.alternatives = Array.isArray(d.alternatives) ? d.alternatives : [];
-    state.respondents = d.respondents;
-    state.activeRespondent = d.activeRespondent || null;
-    state.activeCompareKey = d.activeCompareKey || null;
-    state.nextId = d.nextId || 1;
-    state.built = !!d.built;
-  }
 
-  // Persist the whole registry (after syncing the live state into the active slot).
-  function save() {
-    const p = activeProject();
-    if (p) { p.data = snapshotState(); p.updatedAt = Date.now(); }
-    try { localStorage.setItem(PROJECTS_KEY, JSON.stringify({ activeId, projects })); } catch (e) { /* ignore */ }
-  }
-
-  // Build the in-memory registry from storage (or migrate / seed a first project).
-  function loadProjects() {
-    let parsed = null;
-    try { parsed = JSON.parse(localStorage.getItem(PROJECTS_KEY)); } catch (e) { /* ignore */ }
-    if (parsed && Array.isArray(parsed.projects) && parsed.projects.length) {
-      projects = parsed.projects;
-      activeId = projects.some((p) => p.id === parsed.activeId) ? parsed.activeId : projects[0].id;
-      return;
-    }
-    // Migrate a single-project save from an earlier version.
-    let legacy = null;
-    try { legacy = JSON.parse(localStorage.getItem(LEGACY_KEY)); } catch (e) { /* ignore */ }
-    if (legacy && (legacy.tree || legacy.goal || legacy.respondents)) {
-      const id = projectId();
-      projects = [{ id, name: (legacy.goal || "Imported project").slice(0, 40), updatedAt: Date.now(), data: legacy }];
-      activeId = id;
-      return;
-    }
-    const id = projectId();
-    projects = [{ id, name: "My first project", updatedAt: Date.now(), data: blankData() }];
-    activeId = id;
-  }
-
-  // ---- Project actions ----------------------------------------------------
-  function switchProject(id) {
-    if (id === activeId) return;
-    save();                       // persist the project we're leaving
-    activeId = id;
-    applyStateData(activeProject().data);
-    ensureRespondents();
-    renderProjectSelect();
-    renderWorkspace();
-    save();
-  }
-  function newProject(name) {
-    save();
-    const id = projectId();
-    projects.push({ id, name: name || "Project " + (projects.length + 1), updatedAt: Date.now(), data: blankData() });
-    activeId = id;
-    applyStateData(blankData());
-    ensureRespondents();
-    renderProjectSelect();
-    renderWorkspace();
-    save();
-  }
-  function renameProject() {
-    const p = activeProject();
-    if (!p) return;
-    const name = prompt("Rename project:", p.name);
-    if (name === null) return;
-    p.name = name.trim() || p.name;
-    renderProjectSelect();
-    save();
-  }
-  function duplicateProject() {
-    save();
-    const p = activeProject();
-    const id = projectId();
-    const copy = JSON.parse(JSON.stringify(p.data));
-    projects.push({ id, name: p.name + " (copy)", updatedAt: Date.now(), data: copy });
-    activeId = id;
-    applyStateData(copy);
-    ensureRespondents();
-    renderProjectSelect();
-    renderWorkspace();
-    save();
-  }
-  function deleteProject() {
-    const p = activeProject();
-    if (!p) return;
-    if (!confirm(`Delete project “${p.name}”? This cannot be undone.`)) return;
-    projects = projects.filter((x) => x.id !== activeId);
-    if (projects.length === 0) {
-      projects.push({ id: projectId(), name: "My first project", updatedAt: Date.now(), data: blankData() });
-    }
-    activeId = projects[0].id;
-    applyStateData(activeProject().data);
-    ensureRespondents();
-    renderProjectSelect();
-    renderWorkspace();
-    save();
-  }
-  function renderProjectSelect() {
-    const sel = $("projectSelect");
-    if (!sel) return;
-    sel.innerHTML = "";
-    projects
-      .slice()
-      .forEach((p) => {
-        const opt = document.createElement("option");
-        opt.value = p.id;
-        opt.textContent = p.name;
-        opt.title = (p.data && p.data.description) || "";
-        if (p.id === activeId) opt.selected = true;
-        sel.appendChild(opt);
-      });
-  }
-
-  // Render the whole workspace from the current state (used on load / switch).
-  function renderWorkspace() {
-    $("goalInput").value = state.goal || "";
-    $("projectDesc").value = state.description || "";
-    $("setupValidation").textContent = "";
-    renderTreeEditor();
-    renderAlternatives();
-    if (state.built && AHPTree.leaves(state.tree).length >= 1 && state.alternatives.length >= 2) {
-      buildMatrices();
-      renderCompareStep();
-      renderResults();
-    } else {
-      $("compare").classList.add("hidden");
-      $("results").classList.add("hidden");
-    }
-  }
-
-  // ---- Respondents -------------------------------------------------------
-  function makeRespondent(name) {
-    return { id: newId(), name: name, criteriaMatrices: {}, altMatrices: {} };
-  }
-  function respondentById(id) {
-    return state.respondents.find((r) => r.id === id) || null;
-  }
-  function ensureRespondents() {
-    if (!Array.isArray(state.respondents) || state.respondents.length === 0) {
-      state.respondents = [makeRespondent("Respondent 1")];
-    }
-    if (!state.respondents.some((r) => r.id === state.activeRespondent) && state.activeRespondent !== "group") {
-      state.activeRespondent = state.respondents[0].id;
-    }
-  }
-  function addRespondent() {
-    const r = makeRespondent("Respondent " + (state.respondents.length + 1));
-    state.respondents.push(r);
-    state.activeRespondent = r.id;
-    if (state.built) buildMatrices();   // size the new respondent's matrices
-    renderRespondentBar();
-    renderCompareTabs();
-    renderResults();
-    save();
-  }
-  function removeRespondent(id) {
-    if (state.respondents.length <= 1) return;
-    state.respondents = state.respondents.filter((r) => r.id !== id);
-    if (state.activeRespondent === id) state.activeRespondent = state.respondents[0].id;
-    renderRespondentBar();
-    renderCompareTabs();
-    renderResults();
-    save();
-  }
-
-  // The matrix set currently being viewed: a respondent, or the aggregated group.
-  function activeSource() {
-    if (state.activeRespondent === "group") return aggregatedSource();
-    return respondentById(state.activeRespondent) || state.respondents[0];
-  }
-  function isGroupView() { return state.activeRespondent === "group"; }
-
-  // Geometric-mean aggregation of every respondent's matrices (read-only).
-  function aggregatedSource() {
-    const criteriaMatrices = {};
-    const altMatrices = {};
-    AHPTree.internals(state.tree)
-      .filter((n) => n.children.length >= 2)
-      .forEach((node) => {
-        criteriaMatrices[node.id] = AHP.geomMeanMatrices(
-          state.respondents.map((r) => r.criteriaMatrices[node.id])
-        );
-      });
-    AHPTree.leaves(state.tree).forEach((leaf) => {
-      altMatrices[leaf.id] = AHP.geomMeanMatrices(
-        state.respondents.map((r) => r.altMatrices[leaf.id])
-      );
-    });
-    return { criteriaMatrices, altMatrices };
-  }
-
-  // ---- Slider <-> intensity mapping --------------------------------------
-  // Slider position p in [-8, 8]. p=0 -> equal (value 1). |p| maps to intensity |p|+1.
-  // The thumb points at whichever side it leans toward: p<0 favours the LEFT
-  // item, p>0 favours the RIGHT item. matrix[i][j] is the ratio of left over
-  // right, so favouring the left means a value > 1.
-  function sliderToValue(p) {
-    const intensity = Math.abs(p) + 1; // 1..9
-    return p <= 0 ? intensity : 1 / intensity;
-  }
-  function valueToSlider(v) {
-    if (v >= 1) return -Math.round(v - 1);   // left favoured -> negative position
-    return Math.round(1 / v - 1);            // right favoured -> positive position
-  }
-  // Continuous (non-rounded) position — used for read-only views (e.g. the group
-  // geometric mean) so the thumb reflects the true aggregated ratio, not a snapped notch.
-  function valueToSliderExact(v) {
-    const p = v >= 1 ? -(v - 1) : (1 / v - 1);
-    return Math.max(-8, Math.min(8, p));
-  }
-  // The gauge value (left:right ratio) as a Saaty fraction: "3" if the left item
-  // is favoured, "1/3" if the right (second) item is, "1" when equal.
-  function formatSaatyRatio(v) {
-    if (Math.abs(v - 1) < 1e-9) return "1";
-    return v > 1 ? String(Math.round(v)) : "1/" + Math.round(1 / v);
-  }
-
-  // ---- Criteria tree editor ----------------------------------------------
-  function renderTreeEditor() {
-    const host = $("criteriaTree");
-    host.innerHTML = "";
-    if (state.tree.children.length === 0) {
-      const p = document.createElement("p");
-      p.className = "hint";
-      p.style.margin = "0";
-      p.textContent = "No criteria yet — add your first one below.";
-      host.appendChild(p);
-      return;
-    }
-    state.tree.children.forEach((child) => host.appendChild(renderTreeNode(child, 0)));
-  }
-
-  function renderTreeNode(node, depth) {
-    const wrap = document.createElement("div");
-    wrap.className = "tree-node";
-
-    const row = document.createElement("div");
-    row.className = "tree-row depth-" + depth;
-
-    const name = document.createElement("input");
-    name.type = "text";
-    name.className = "tree-name";
-    name.value = node.name;
-    name.placeholder = "Criterion name";
-    name.addEventListener("input", () => {
-      node.name = name.value;
-      invalidateBuild(false); // keep focus: don't re-render the tree
-    });
-
-    const addSub = document.createElement("button");
-    addSub.type = "button";
-    addSub.className = "tree-btn";
-    addSub.textContent = "+ sub";
-    addSub.title = "Add a sub-criterion under " + (node.name || "this criterion");
-    addSub.addEventListener("click", () => {
-      node.children = node.children || [];
-      node.children.push({ id: newId(), name: "", children: [] });
-      invalidateBuild(true);
-      focusLastInput(wrap);
-    });
-
-    const del = document.createElement("button");
-    del.type = "button";
-    del.className = "tree-btn remove";
-    del.textContent = "✕";
-    del.title = "Remove this criterion (and its sub-criteria)";
-    del.addEventListener("click", () => {
-      AHPTree.removeById(state.tree, node.id);
-      invalidateBuild(true);
-    });
-
-    row.appendChild(name);
-    row.appendChild(addSub);
-    row.appendChild(del);
-    wrap.appendChild(row);
-
-    if (node.children && node.children.length) {
-      const kids = document.createElement("div");
-      kids.className = "tree-children";
-      node.children.forEach((c) => kids.appendChild(renderTreeNode(c, depth + 1)));
-      wrap.appendChild(kids);
-    }
-    return wrap;
-  }
-
-  function focusLastInput(container) {
-    const inputs = container.querySelectorAll("input.tree-name");
-    if (inputs.length) inputs[inputs.length - 1].focus();
-  }
-
-  // ---- Alternatives list -------------------------------------------------
-  function renderAlternatives() {
-    const listEl = $("alternativesList");
-    listEl.innerHTML = "";
-    state.alternatives.forEach((item, idx) => {
-      const li = document.createElement("li");
-      li.className = "chip";
-      const span = document.createElement("span");
-      span.textContent = item;
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.setAttribute("aria-label", "Remove " + item);
-      btn.textContent = "✕";
-      btn.addEventListener("click", () => {
-        state.alternatives.splice(idx, 1);
-        invalidateBuild(true);
-      });
-      li.appendChild(span);
-      li.appendChild(btn);
-      listEl.appendChild(li);
-    });
-  }
-
-  function addCriterion(inputEl) {
-    const val = inputEl.value.trim();
-    if (!val) return;
-    state.tree.children.push({ id: newId(), name: val, children: [] });
-    inputEl.value = "";
-    invalidateBuild(true);
-  }
-
-  function addAlternative(inputEl) {
-    const val = inputEl.value.trim();
-    if (!val) return;
-    if (state.alternatives.some((x) => x.toLowerCase() === val.toLowerCase())) {
-      inputEl.value = "";
-      return;
-    }
-    state.alternatives.push(val);
-    inputEl.value = "";
-    invalidateBuild(true);
-  }
-
-  // When the hierarchy / alternatives change, comparisons must be rebuilt.
-  function invalidateBuild(rerenderEditors) {
-    state.built = false;
-    $("compare").classList.add("hidden");
-    $("results").classList.add("hidden");
-    if (rerenderEditors) {
-      renderTreeEditor();
-      renderAlternatives();
-    }
-    save();
-  }
-
-  // ---- Build comparison structures ---------------------------------------
-  // Ensure every respondent has a correctly-sized matrix for each comparison,
-  // preserving any existing judgements whose dimensions still match.
-  function buildMatrices() {
-    ensureRespondents();
-    const internals = AHPTree.internals(state.tree);
-    const leaves = AHPTree.leaves(state.tree);
-    const A = state.alternatives.length;
-
-    state.respondents.forEach((r) => {
-      const newCrit = {};
-      internals.forEach((node) => {
-        const k = node.children.length;
-        const existing = r.criteriaMatrices[node.id];
-        newCrit[node.id] = (Array.isArray(existing) && existing.length === k)
-          ? existing : AHP.identityComparison(k);
-      });
-      r.criteriaMatrices = newCrit;
-
-      const newAlt = {};
-      leaves.forEach((leaf) => {
-        const existing = r.altMatrices[leaf.id];
-        newAlt[leaf.id] = (Array.isArray(existing) && existing.length === A)
-          ? existing : AHP.identityComparison(A);
-      });
-      r.altMatrices = newAlt;
-    });
-
-    state.built = true;
-  }
-
-  // ---- Generic pairwise UI -----------------------------------------------
-  function renderPairwise(host, labels, matrix, onChange, readOnly) {
-    host.innerHTML = "";
-    const n = labels.length;
-    for (let i = 0; i < n; i++) {
-      for (let j = i + 1; j < n; j++) {
-        host.appendChild(buildPairRow(labels, matrix, i, j, onChange, readOnly));
-      }
-    }
-  }
-
-  function buildPairRow(labels, matrix, i, j, onChange, readOnly) {
-    const row = document.createElement("div");
-    row.className = "pair-row";
-
-    const left = document.createElement("div");
-    left.className = "pair-label left";
-    left.textContent = labels[i];
-
-    const right = document.createElement("div");
-    right.className = "pair-label right";
-    right.textContent = labels[j];
-
-    const wrap = document.createElement("div");
-    wrap.className = "slider-wrap";
-
-    const controls = document.createElement("div");
-    controls.className = "slider-controls";
-
-    const slider = document.createElement("input");
-    slider.type = "range";
-    slider.min = "-8";
-    slider.max = "8";
-    // Read-only views (group geometric mean) can sit between Saaty notches, so
-    // allow a continuous thumb position; editable views snap to integer steps.
-    slider.step = readOnly ? "any" : "1";
-    slider.value = String(readOnly ? valueToSliderExact(matrix[i][j]) : valueToSlider(matrix[i][j]));
-
-    const readout = document.createElement("div");
-    readout.className = "slider-readout";
-
-    function refresh() {
-      if (readOnly) {
-        // Group average: show the raw geometric-mean ratio (< 1 when the right item wins).
-        const v = matrix[i][j];
-        const eq = Math.abs(v - 1) < 5e-3;
-        left.classList.toggle("active", v > 1 && !eq);
-        right.classList.toggle("active", v < 1 && !eq);
-        readout.textContent = eq
-          ? "≈ Equal · value 1.00"
-          : `${v > 1 ? labels[i] : labels[j]} — value ${v.toFixed(2)} (geo. mean)`;
-        return;
-      }
-      const p = parseInt(slider.value, 10);
-      const intensity = Math.abs(p) + 1;
-      left.classList.toggle("active", p < 0);
-      right.classList.toggle("active", p > 0);
-      // value = left:right ratio ("3" if left wins, "1/3" if the right item wins).
-      readout.textContent = p === 0
-        ? "Equal importance · value 1"
-        : `${p < 0 ? labels[i] : labels[j]} — ${VERBAL[intensity]} · value ${formatSaatyRatio(sliderToValue(p))}`;
+    // ---- Helpers ----
+    function persist() {
+        Store.save(state);
     }
 
-    // Move the comparison one notch. delta<0 favours the left item, delta>0 the right.
-    function step(delta) {
-      const p = Math.max(-8, Math.min(8, parseInt(slider.value, 10) + delta));
-      slider.value = String(p);
-      AHP.setPair(matrix, i, j, sliderToValue(p));
-      refresh();
-      onChange();
+    // A small stable id without relying on Date.now()/random being available everywhere.
+    var idCounter = 0;
+    function makeId() {
+        idCounter += 1;
+        return "p" + idCounter + "_" + (new Date().getTime());
     }
 
-    if (readOnly) {
-      slider.disabled = true;
-      controls.appendChild(slider);
-    } else {
-      slider.addEventListener("input", () => {
-        AHP.setPair(matrix, i, j, sliderToValue(parseInt(slider.value, 10)));
-        refresh();
-        onChange();
-      });
-
-      const lessBtn = document.createElement("button");
-      lessBtn.type = "button";
-      lessBtn.className = "step-btn";
-      lessBtn.textContent = "◀";
-      lessBtn.title = "More important: " + labels[i];
-      lessBtn.setAttribute("aria-label", "Favour " + labels[i]);
-      lessBtn.addEventListener("click", () => step(-1));
-
-      const moreBtn = document.createElement("button");
-      moreBtn.type = "button";
-      moreBtn.className = "step-btn";
-      moreBtn.textContent = "▶";
-      moreBtn.title = "More important: " + labels[j];
-      moreBtn.setAttribute("aria-label", "Favour " + labels[j]);
-      moreBtn.addEventListener("click", () => step(1));
-
-      controls.appendChild(lessBtn);
-      controls.appendChild(slider);
-      controls.appendChild(moreBtn);
+    function initial(name) {
+        name = (name || "").trim();
+        return name ? name.charAt(0).toUpperCase() : "🙂";
     }
 
-    refresh();
-    wrap.appendChild(controls);
-    wrap.appendChild(readout);
-    row.appendChild(left);
-    row.appendChild(wrap);
-    row.appendChild(right);
-    return row;
-  }
-
-  // ---- Consistency banner -------------------------------------------------
-  function renderConsistency(el, labels, result) {
-    const crPct = (result.cr * 100).toFixed(3);
-    const ok = result.consistent;
-    const pill = `<span class="pill ${ok ? "ok" : "bad"}">${ok ? "Consistent" : "Inconsistent"}</span>`;
-    const tags = labels.map((lab, k) =>
-      `<span class="weight-tag">${escapeHtml(lab)} <b>${(result.weights[k] * 100).toFixed(3)}%</b></span>`
-    ).join("");
-    el.innerHTML = `
-      ${pill}
-      &nbsp; Consistency Ratio <b>${crPct}%</b>
-      &nbsp;·&nbsp; λ<sub>max</sub> ${result.lambdaMax.toFixed(4)}
-      &nbsp;·&nbsp; CI ${result.ci.toFixed(4)}
-      ${ok ? "" : `<div class="hint" style="margin-top:8px">CR above 10% — revisit the most contradictory judgements for a more reliable result.</div>`}
-      <div class="weights-inline">${tags}</div>`;
-  }
-
-  // ---- Step 2: comparisons, presented as one tab strip -------------------
-  // Each comparison (a criteria group or a leaf's alternative scoring) is a tab.
-  function comparisonItems() {
-    const items = [];
-    // Criteria groups: every internal node with >= 2 children.
-    AHPTree.internals(state.tree)
-      .filter((n) => n.children.length >= 2)
-      .forEach((node) => items.push({ kind: "crit", id: node.id, key: "crit:" + node.id, node }));
-    // Alternative scoring: one per leaf (needs >= 2 alternatives).
-    if (state.alternatives.length >= 2) {
-      AHPTree.leaves(state.tree).forEach((leaf) =>
-        items.push({ kind: "alt", id: leaf.id, key: "alt:" + leaf.id, node: leaf }));
-    }
-    return items;
-  }
-
-  function itemLabels(item) {
-    return item.kind === "crit"
-      ? item.node.children.map((c) => c.name || "(unnamed)")
-      : state.alternatives;
-  }
-  function itemMatrix(item, source) {
-    return item.kind === "crit"
-      ? source.criteriaMatrices[item.id]
-      : source.altMatrices[item.id];
-  }
-  function itemTabLabel(item) {
-    if (item.kind === "crit") {
-      return item.id === "root" ? "Criteria" : AHPTree.pathLabel(state.tree, item.id);
-    }
-    return AHPTree.pathLabel(state.tree, item.id);
-  }
-
-  // Full render of Step 2: respondent bar + comparison tabs/panel.
-  function renderCompareStep() {
-    $("compare").classList.remove("hidden");
-    renderRespondentBar();
-    renderCompareTabs();
-  }
-
-  // The respondent selector: one chip per respondent + add + group view.
-  function renderRespondentBar() {
-    ensureRespondents();
-    const bar = $("respondentBar");
-    bar.innerHTML = "";
-
-    const label = document.createElement("span");
-    label.className = "tab-label";
-    label.textContent = "Respondents";
-    bar.appendChild(label);
-
-    state.respondents.forEach((r) => {
-      const chip = document.createElement("div");
-      chip.className = "resp-chip" + (state.activeRespondent === r.id ? " active" : "");
-      chip.dataset.respId = r.id;
-
-      const input = document.createElement("input");
-      input.type = "text";
-      input.className = "resp-name";
-      input.value = r.name;
-      input.setAttribute("aria-label", "Respondent name");
-      // Focusing a chip selects that respondent (without rebuilding the bar,
-      // so the input keeps focus and can be renamed immediately).
-      input.addEventListener("focus", () => {
-        if (state.activeRespondent !== r.id) {
-          state.activeRespondent = r.id;
-          markActiveRespondent();
-          renderCompareTabs();
-          renderResults();
-          save();
+    // Fill an avatar element with the custom picture if set, else the name initial.
+    // Used for the top-bar avatar and each post's avatar so they stay in sync.
+    function applyAvatar(node) {
+        node.innerHTML = "";
+        if (state.profile.avatar) {
+            var img = document.createElement("img");
+            img.src = state.profile.avatar;
+            img.alt = "profile picture";
+            img.className = "avatar-img";
+            node.appendChild(img);
+            node.classList.add("has-img");
+        } else {
+            node.textContent = initial(state.profile.name);
+            node.classList.remove("has-img");
         }
-      });
-      input.addEventListener("input", () => {
-        r.name = input.value;
-        save();
-        if (state.built) renderResults();
-      });
-      chip.appendChild(input);
-
-      if (state.respondents.length > 1) {
-        const x = document.createElement("button");
-        x.type = "button";
-        x.className = "resp-x";
-        x.textContent = "✕";
-        x.title = "Remove this respondent";
-        x.addEventListener("click", () => removeRespondent(r.id));
-        chip.appendChild(x);
-      }
-      bar.appendChild(chip);
-    });
-
-    const add = document.createElement("button");
-    add.type = "button";
-    add.className = "btn small";
-    add.textContent = "＋ Respondent";
-    add.addEventListener("click", addRespondent);
-    bar.appendChild(add);
-
-    const group = document.createElement("button");
-    group.type = "button";
-    group.className = "group-tab" + (isGroupView() ? " active" : "");
-    group.textContent = "Group (avg)";
-    group.title = "Aggregated across all respondents (geometric mean)";
-    group.dataset.groupTab = "1";
-    group.addEventListener("click", () => {
-      state.activeRespondent = "group";
-      markActiveRespondent();
-      renderCompareTabs();
-      renderResults();
-      save();
-    });
-    bar.appendChild(group);
-  }
-
-  // Toggle active styling on the bar without a full rebuild (keeps input focus).
-  function markActiveRespondent() {
-    const bar = $("respondentBar");
-    [...bar.querySelectorAll(".resp-chip")].forEach((chip) => {
-      chip.classList.toggle("active", chip.dataset.respId === state.activeRespondent);
-    });
-    const group = bar.querySelector("[data-group-tab]");
-    if (group) group.classList.toggle("active", isGroupView());
-  }
-
-  // The comparison tab strip + active panel, for the current source.
-  function renderCompareTabs() {
-    const tabsEl = $("compareTabs");
-    const panel = $("comparePanel");
-    tabsEl.innerHTML = "";
-    panel.innerHTML = "";
-
-    const items = comparisonItems();
-    if (items.length === 0) {
-      panel.innerHTML = `<span class="hint">Add at least two criteria and two alternatives to start comparing.</span>`;
-      return;
-    }
-    if (!items.some((it) => it.key === state.activeCompareKey)) {
-      state.activeCompareKey = items[0].key;
     }
 
-    const source = activeSource();
-    let lastKind = null;
-    items.forEach((item) => {
-      if (item.kind !== lastKind) {
-        const lab = document.createElement("span");
-        lab.className = "tab-label";
-        lab.textContent = item.kind === "crit" ? "Weigh criteria" : "Score alternatives by";
-        tabsEl.appendChild(lab);
-        lastKind = item.kind;
-      }
-      const tab = document.createElement("button");
-      tab.type = "button";
-      tab.className = "tab" + (item.key === state.activeCompareKey ? " active" : "");
-      const dot = document.createElement("span");
-      dot.className = "dot " + (AHP.analyze(itemMatrix(item, source)).consistent ? "ok" : "bad");
-      tab.appendChild(dot);
-      tab.appendChild(document.createTextNode(itemTabLabel(item)));
-      tab.addEventListener("click", () => {
-        state.activeCompareKey = item.key;
-        renderCompareTabs();
-      });
-      tabsEl.appendChild(tab);
-    });
+    // Take any image file, center-crop it to a square, downscale to AVATAR_SIZE,
+    // and return a compact JPEG data URL. Keeps avatars tiny in localStorage and
+    // sidesteps the upload size limit (huge photos become ~20–40 KB).
+    var AVATAR_SIZE = 256;
 
-    const active = items.find((it) => it.key === state.activeCompareKey);
-    renderComparePanel(active, panel, tabsEl, source);
-  }
+    // Center-crop + downscale any image (given as a URL/data URL) to a compact
+    // square JPEG. Shared by file uploads and "set this picture as my avatar".
+    function rasterizeAvatar(srcUrl) {
+        return new Promise(function (resolve, reject) {
+            var img = new Image();
+            img.onerror = function () { reject(new Error("Could not load that image.")); };
+            img.onload = function () {
+                var side = Math.min(img.naturalWidth, img.naturalHeight);
+                if (!side) { reject(new Error("That image appears to be empty.")); return; }
+                var sx = (img.naturalWidth - side) / 2; // center crop
+                var sy = (img.naturalHeight - side) / 2;
 
-  function renderComparePanel(item, panel, tabsEl, source) {
-    const labels = itemLabels(item);
-    const matrix = itemMatrix(item, source);
-    const readOnly = isGroupView();
+                var canvas = document.createElement("canvas");
+                canvas.width = AVATAR_SIZE;
+                canvas.height = AVATAR_SIZE;
+                var ctx = canvas.getContext("2d");
+                ctx.fillStyle = "#ffffff"; // flatten any transparency (JPEG has none)
+                ctx.fillRect(0, 0, AVATAR_SIZE, AVATAR_SIZE);
+                ctx.drawImage(img, sx, sy, side, side, 0, 0, AVATAR_SIZE, AVATAR_SIZE);
 
-    const heading = document.createElement("p");
-    heading.className = "hint";
-    if (item.kind === "crit") {
-      heading.innerHTML = item.id === "root"
-        ? `Weigh the <b>top-level criteria</b> against each other.`
-        : `Weigh the sub-criteria of <b>${escapeHtml(AHPTree.pathLabel(state.tree, item.id))}</b>.`;
-    } else {
-      heading.innerHTML = `Score the alternatives by <b>${escapeHtml(AHPTree.pathLabel(state.tree, item.id))}</b>: which performs better, and how strongly?`;
-    }
-    panel.appendChild(heading);
-
-    if (readOnly) {
-      const note = document.createElement("p");
-      note.className = "readonly-note";
-      note.textContent = `Aggregated from ${state.respondents.length} respondent${state.respondents.length === 1 ? "" : "s"} (geometric mean) — read-only. Select a respondent to edit.`;
-      panel.appendChild(note);
+                try {
+                    resolve(canvas.toDataURL("image/jpeg", 0.85));
+                } catch (e) {
+                    reject(new Error("Could not process that image."));
+                }
+            };
+            img.src = srcUrl;
+        });
     }
 
-    const matrixHost = document.createElement("div");
-    panel.appendChild(matrixHost);
-    const banner = document.createElement("div");
-    banner.className = "consistency";
-    panel.appendChild(banner);
-
-    renderPairwise(matrixHost, labels, matrix, () => {
-      const r = AHP.analyze(matrix);
-      renderConsistency(banner, labels, r);
-      const activeTab = [...tabsEl.children].find((t) => t.classList.contains("active"));
-      const dot = activeTab && activeTab.querySelector(".dot");
-      if (dot) dot.className = "dot " + (r.consistent ? "ok" : "bad");
-      save();
-      renderResults();
-    }, readOnly);
-    renderConsistency(banner, labels, AHP.analyze(matrix));
-  }
-
-  // ---- Step 4: results ----------------------------------------------------
-  function renderResults() {
-    if (!state.built) return;
-    const leaves = AHPTree.leaves(state.tree);
-    if (leaves.length === 0 || state.alternatives.length < 2) {
-      $("results").classList.add("hidden");
-      return;
-    }
-    $("results").classList.remove("hidden");
-
-    const source = activeSource();
-    const weights = AHPTree.computeWeights(state.tree, source.criteriaMatrices);
-    const leafWeights = leaves.map((l) => weights[l.id].global);
-    const altWeightsPerLeaf = leaves.map((l) => AHP.analyze(source.altMatrices[l.id]).weights);
-    const scores = AHP.aggregate(leafWeights, altWeightsPerLeaf);
-    const maxScore = Math.max(...scores, 1e-9);
-
-    const ranked = state.alternatives
-      .map((name, i) => ({ name, score: scores[i], i }))
-      .sort((a, b) => b.score - a.score);
-
-    const body = $("resultsBody");
-    body.innerHTML = "";
-
-    // Whose result is this?
-    const srcLine = document.createElement("p");
-    srcLine.className = "results-note";
-    if (isGroupView()) {
-      srcLine.innerHTML = `Showing the <b>group result</b> — aggregated from ${state.respondents.length} respondent${state.respondents.length === 1 ? "" : "s"} (geometric mean).`;
-    } else {
-      const r = respondentById(state.activeRespondent) || state.respondents[0];
-      const suffix = state.respondents.length > 1 ? ` &nbsp;<span style="color:var(--muted)">(switch to “Group (avg)” for the combined result)</span>` : "";
-      srcLine.innerHTML = `Showing results for <b>${escapeHtml(r.name)}</b>.${suffix}`;
-    }
-    body.appendChild(srcLine);
-
-    // Goal + ranking
-    const goalLine = document.createElement("p");
-    goalLine.className = "results-note";
-    goalLine.innerHTML = state.goal ? `Goal: <b>${escapeHtml(state.goal)}</b>` : "Final ranking of alternatives:";
-    body.appendChild(goalLine);
-
-    const list = document.createElement("div");
-    list.className = "rank-list";
-    ranked.forEach((row, pos) => {
-      const item = document.createElement("div");
-      item.className = "rank-item" + (pos === 0 ? " winner" : "");
-      item.innerHTML = `
-        <div class="rank-badge">${pos + 1}</div>
-        <div>
-          <div class="rank-name">${escapeHtml(row.name)}</div>
-          <div class="rank-bar-track">
-            <div class="rank-bar-fill" style="width:${(row.score / maxScore * 100).toFixed(1)}%"></div>
-          </div>
-        </div>
-        <div class="rank-score">${(row.score * 100).toFixed(3)}%<small>priority</small></div>`;
-      list.appendChild(item);
-    });
-    body.appendChild(list);
-
-    // Leaf weights (hierarchy) table
-    const lwNote = document.createElement("p");
-    lwNote.className = "results-note";
-    lwNote.textContent = "Criteria leaf weights (local within parent → global toward the goal):";
-    body.appendChild(lwNote);
-    body.appendChild(buildLeafWeightTable(leaves, weights));
-
-    // Synthesis decision matrix: alternatives × leaves
-    const synNote = document.createElement("p");
-    synNote.className = "results-note";
-    synNote.textContent = "Decision matrix — each cell is the alternative's local priority for that leaf criterion:";
-    body.appendChild(synNote);
-    body.appendChild(buildSynthesisTable(leaves, leafWeights, altWeightsPerLeaf, scores));
-  }
-
-  function buildLeafWeightTable(leaves, weights) {
-    const wrap = document.createElement("div");
-    wrap.className = "table-wrap";
-    const t = document.createElement("table");
-    t.className = "matrix-table";
-    let head = "<tr><th>Leaf criterion</th><th>Local</th><th>Global</th></tr>";
-    const rows = leaves.map((l) => {
-      const w = weights[l.id];
-      return `<tr>
-        <td class="lead">${escapeHtml(AHPTree.pathLabel(state.tree, l.id))}</td>
-        <td>${(w.local * 100).toFixed(3)}%</td>
-        <td><b>${(w.global * 100).toFixed(3)}%</b></td></tr>`;
-    }).join("");
-    t.innerHTML = head + rows;
-    wrap.appendChild(t);
-    return wrap;
-  }
-
-  function buildSynthesisTable(leaves, leafWeights, altWeightsPerLeaf, scores) {
-    const wrap = document.createElement("div");
-    wrap.className = "table-wrap";
-    const t = document.createElement("table");
-    t.className = "matrix-table";
-
-    let head = "<tr><th>Alternative</th>";
-    leaves.forEach((l, i) => {
-      head += `<th>${escapeHtml(l.name || "(unnamed)")}<br><small>${(leafWeights[i] * 100).toFixed(1)}%</small></th>`;
-    });
-    head += "<th>Score</th></tr>";
-
-    let rows = "";
-    state.alternatives.forEach((name, a) => {
-      let r = `<tr><td class="lead">${escapeHtml(name)}</td>`;
-      leaves.forEach((l, c) => {
-        const v = altWeightsPerLeaf[c][a] || 0;
-        const shade = 0.08 + 0.32 * v;
-        r += `<td class="heat" style="background:rgba(79,156,255,${shade.toFixed(3)})">${(v * 100).toFixed(3)}%</td>`;
-      });
-      r += `<td><b>${(scores[a] * 100).toFixed(3)}%</b></td></tr>`;
-      rows += r;
-    });
-
-    t.innerHTML = head + rows;
-    wrap.appendChild(t);
-    return wrap;
-  }
-
-  // ---- CSV export ---------------------------------------------------------
-  function csvCell(v) {
-    if (v === undefined || v === null) return "";
-    const s = String(v);
-    const needsQuote = s.indexOf('"') !== -1 || s.indexOf(",") !== -1 ||
-      s.indexOf("\n") !== -1 || s.indexOf("\r") !== -1;
-    return needsQuote ? '"' + s.split('"').join('""') + '"' : s;
-  }
-  function csvNum(x) {
-    return (typeof x === "number" && isFinite(x)) ? x.toFixed(6) : "";
-  }
-  function csvPct(x) {
-    return (typeof x === "number" && isFinite(x)) ? (x * 100).toFixed(3) + "%" : "";
-  }
-
-  // Final scores for one respondent/source's matrices.
-  function scoresFor(source, leaves) {
-    const weights = AHPTree.computeWeights(state.tree, source.criteriaMatrices);
-    const leafWeights = leaves.map((l) => weights[l.id].global);
-    const altWeightsPerLeaf = leaves.map((l) => AHP.analyze(source.altMatrices[l.id]).weights);
-    return { weights, leafWeights, altWeightsPerLeaf, scores: AHP.aggregate(leafWeights, altWeightsPerLeaf) };
-  }
-
-  // Build a multi-section CSV of the full analysis (active view + cross-respondent).
-  function buildResultsCsv() {
-    const leaves = AHPTree.leaves(state.tree);
-    const source = activeSource();
-    const { weights, leafWeights, altWeightsPerLeaf, scores } = scoresFor(source, leaves);
-
-    const ranked = state.alternatives
-      .map((name, i) => ({ name, score: scores[i] }))
-      .sort((a, b) => b.score - a.score);
-
-    const sourceLabel = isGroupView()
-      ? `Group (aggregated from ${state.respondents.length} respondents)`
-      : (respondentById(state.activeRespondent) || state.respondents[0]).name;
-
-    const rows = [];
-    const push = (...cells) => rows.push(cells.map(csvCell).join(","));
-
-    push("AHP Decision Analysis");
-    push("Goal", state.goal || "(none)");
-    if (state.description) push("Description", state.description);
-    push("Result shown for", sourceLabel);
-    push("Priority method", "Principal eigenvector (power iteration)");
-    push();
-
-    push("Final ranking");
-    push("Rank", "Alternative", "Priority", "Priority %");
-    ranked.forEach((r, pos) => push(pos + 1, r.name, csvNum(r.score), csvPct(r.score)));
-    push();
-
-    push("Criteria leaf weights");
-    push("Criterion (path)", "Local weight", "Global weight");
-    leaves.forEach((l) =>
-      push(AHPTree.pathLabel(state.tree, l.id), csvNum(weights[l.id].local), csvNum(weights[l.id].global)));
-    push();
-
-    push("Decision matrix (local priority of each alternative per leaf criterion)");
-    push("Alternative", ...leaves.map((l) => AHPTree.pathLabel(state.tree, l.id)), "Final score");
-    state.alternatives.forEach((name, a) =>
-      push(name, ...leaves.map((l, c) => csvNum(altWeightsPerLeaf[c][a])), csvNum(scores[a])));
-    push();
-
-    push("Consistency check (per comparison)");
-    push("Comparison", "Size", "Consistency Ratio", "CR %", "lambda_max", "Consistent?");
-    comparisonItems().forEach((item) => {
-      const res = AHP.analyze(itemMatrix(item, source));
-      const label = item.kind === "crit"
-        ? (item.id === "root" ? "Criteria" : AHPTree.pathLabel(state.tree, item.id) + " (sub-criteria)")
-        : "Alternatives by " + AHPTree.pathLabel(state.tree, item.id);
-      push(label, itemLabels(item).length, csvNum(res.cr), csvPct(res.cr), res.lambdaMax.toFixed(6), res.consistent ? "Yes" : "No");
-    });
-    push();
-
-    // Cross-respondent comparison of final scores (only meaningful with >1 respondent).
-    if (state.respondents.length > 1) {
-      push("Final scores by respondent");
-      push("Alternative", ...state.respondents.map((r) => r.name), "Group (avg)");
-      const perRes = state.respondents.map((r) => scoresFor(r, leaves).scores);
-      const groupScores = scoresFor(aggregatedSource(), leaves).scores;
-      state.alternatives.forEach((name, a) =>
-        push(name, ...perRes.map((s) => csvNum(s[a])), csvNum(groupScores[a])));
-      push();
+    function processAvatar(file) {
+        return new Promise(function (resolve, reject) {
+            if (!file.type || file.type.indexOf("image/") !== 0) {
+                reject(new Error("That file isn't an image."));
+                return;
+            }
+            var reader = new FileReader();
+            reader.onerror = function () { reject(reader.error || new Error("Could not read the file.")); };
+            reader.onload = function () { rasterizeAvatar(reader.result).then(resolve, reject); };
+            reader.readAsDataURL(file);
+        });
     }
 
-    return "﻿" + rows.join("\r\n"); // BOM so Excel reads UTF-8 correctly
-  }
-
-  function slugify(s) {
-    return (s || "ahp-results").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "ahp-results";
-  }
-
-  function downloadFile(filename, text, mime) {
-    const blob = new Blob([text], { type: mime });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 1500);
-  }
-
-  function downloadResultsCsv() {
-    if (!state.built || AHPTree.leaves(state.tree).length < 1 || state.alternatives.length < 2) return;
-    const date = new Date().toISOString().slice(0, 10);
-    downloadFile(`AHP-${slugify(state.goal)}-${date}.csv`, buildResultsCsv(), "text/csv;charset=utf-8");
-  }
-
-  // ---- XLSX export (multi-tab workbook, no dependencies) -----------------
-  // An .xlsx is a ZIP of XML parts. We build the parts and a minimal ZIP
-  // (stored / uncompressed entries with CRC-32) entirely in the browser.
-
-  function escapeXml(s) {
-    return String(s).split("&").join("&amp;").split("<").join("&lt;").split(">").join("&gt;");
-  }
-  // A bare number string (no scientific notation) that Excel reads exactly.
-  function numStr(x) {
-    if (typeof x !== "number" || !isFinite(x)) return "0";
-    let s = x.toFixed(12);
-    if (s.indexOf(".") !== -1) s = s.replace(/0+$/, "").replace(/\.$/, "");
-    return (s === "" || s === "-0") ? "0" : s;
-  }
-  function colLetter(i) { // 0-based column index -> A, B, ... AA
-    let s = "";
-    i += 1;
-    while (i > 0) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); }
-    return s;
-  }
-
-  // Cell factories: H = bold header text, T = text, N = number.
-  function H(v) { return { kind: "h", v: v }; }
-  function T(v) { return { kind: "t", v: v }; }
-  function N(v) { return { kind: "n", v: v }; }
-
-  function cellXml(cell, ref) {
-    if (!cell) return "";
-    if (cell.kind === "n") {
-      if (typeof cell.v !== "number" || !isFinite(cell.v)) return "";
-      return `<c r="${ref}"><v>${numStr(cell.v)}</v></c>`;
+    // Adopt an existing picture (a feed/album image) as the profile avatar.
+    function setAvatarFromPicture(srcUrl) {
+        rasterizeAvatar(srcUrl).then(function (dataUrl) {
+            var prev = state.profile.avatar;
+            state.profile.avatar = dataUrl;
+            if (!Store.save(state)) {
+                state.profile.avatar = prev; // roll back on quota failure
+                alert("Couldn't save the picture — storage may be full.");
+                return;
+            }
+            renderProfile();
+            renderFeed(); // refresh post avatars
+        }).catch(function (err) {
+            alert(err.message);
+        });
     }
-    const style = cell.kind === "h" ? ` s="1"` : "";
-    return `<c r="${ref}"${style} t="inlineStr"><is><t xml:space="preserve">${escapeXml(cell.v)}</t></is></c>`;
-  }
-  function sheetXml(rows) {
-    let body = "";
-    rows.forEach((row, ri) => {
-      const r = ri + 1;
-      let cells = "";
-      row.forEach((cell, ci) => { cells += cellXml(cell, colLetter(ci) + r); });
-      body += `<row r="${r}">${cells}</row>`;
-    });
-    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-      `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${body}</sheetData></worksheet>`;
-  }
 
-  // Assemble the result tabs.
-  function buildWorkbookSheets() {
-    const leaves = AHPTree.leaves(state.tree);
-    const source = activeSource();
-    const { weights, leafWeights, altWeightsPerLeaf, scores } = scoresFor(source, leaves);
-    const ranked = state.alternatives
-      .map((name, i) => ({ name, score: scores[i] }))
-      .sort((a, b) => b.score - a.score);
-    const sourceLabel = isGroupView()
-      ? `Group (avg of ${state.respondents.length} respondents)`
-      : (respondentById(state.activeRespondent) || state.respondents[0]).name;
-    const path = (l) => AHPTree.pathLabel(state.tree, l.id);
-    const sheets = [];
+    // Human-friendly relative time ("just now", "5m", "3h", or a date).
+    function relTime(ts) {
+        var diff = Date.now() - ts;
+        var sec = Math.floor(diff / 1000);
+        if (sec < 45) return "just now";
+        var min = Math.floor(sec / 60);
+        if (min < 60) return min + "m";
+        var hr = Math.floor(min / 60);
+        if (hr < 24) return hr + "h";
+        var day = Math.floor(hr / 24);
+        if (day < 7) return day + "d";
+        return new Date(ts).toLocaleDateString();
+    }
 
-    const summary = [
-      [H("AHP Decision Analysis")],
-      [T("Goal"), T(state.goal || "(none)")],
+    function escapeText(s) {
+        // textContent does the escaping for us; this is just a guard for empties.
+        return s == null ? "" : String(s);
+    }
+
+    // Local calendar date as "YYYY-MM-DD" — the key the daily reminders reset on.
+    function fmtDate(d) {
+        var m = String(d.getMonth() + 1);
+        var day = String(d.getDate());
+        if (m.length < 2) m = "0" + m;
+        if (day.length < 2) day = "0" + day;
+        return d.getFullYear() + "-" + m + "-" + day;
+    }
+    function todayStr() { return fmtDate(new Date()); }
+    function yesterdayStr() {
+        var d = new Date();
+        d.setDate(d.getDate() - 1);
+        return fmtDate(d);
+    }
+
+    // ---- Profile rendering ----
+    function renderProfile() {
+        el.profileName.value = state.profile.name;
+        el.statusInput.value = state.profile.status;
+        applyAvatar(el.avatar);
+        el.avatarRemove.hidden = !state.profile.avatar;
+        setAvailabilityClass(state.profile.availability);
+    }
+
+    function setAvailabilityClass(value) {
+        el.statusDot.className = "status-dot"; // reset
+        if (value === "away") el.statusDot.classList.add("away");
+        else if (value === "busy") el.statusDot.classList.add("busy");
+        else if (value === "invis") el.statusDot.classList.add("invis");
+        el.statusDot.title = "Availability: " + value + " (click to change)";
+    }
+
+    // ---- Composer ----
+    function updateCharCount() {
+        el.charCount.textContent = String(el.composerText.value.length);
+    }
+
+    function refreshPostButton() {
+        var hasText = el.composerText.value.trim().length > 0;
+        el.postBtn.disabled = !hasText && pendingImages.length === 0;
+    }
+
+    function renderPreviews() {
+        el.previewStrip.innerHTML = "";
+        if (pendingImages.length === 0) {
+            el.previewStrip.hidden = true;
+            return;
+        }
+        el.previewStrip.hidden = false;
+        pendingImages.forEach(function (dataUrl, idx) {
+            var thumb = document.createElement("div");
+            thumb.className = "preview-thumb";
+
+            var img = document.createElement("img");
+            img.src = dataUrl;
+            img.alt = "pending image " + (idx + 1);
+
+            var remove = document.createElement("button");
+            remove.type = "button";
+            remove.textContent = "✕";
+            remove.title = "Remove";
+            remove.addEventListener("click", function () {
+                pendingImages.splice(idx, 1);
+                renderPreviews();
+                refreshPostButton();
+            });
+
+            thumb.appendChild(img);
+            thumb.appendChild(remove);
+            el.previewStrip.appendChild(thumb);
+        });
+    }
+
+    function readImageFile(file) {
+        return new Promise(function (resolve, reject) {
+            if (!file.type || file.type.indexOf("image/") !== 0) {
+                reject(new Error("Not an image: " + file.name));
+                return;
+            }
+            if (file.size > MAX_IMAGE_BYTES) {
+                reject(new Error(file.name + " is larger than 4 MB."));
+                return;
+            }
+            var reader = new FileReader();
+            reader.onload = function () { resolve(reader.result); };
+            reader.onerror = function () { reject(reader.error); };
+            reader.readAsDataURL(file);
+        });
+    }
+
+    function handleFiles(fileList) {
+        var files = Array.prototype.slice.call(fileList);
+        files.forEach(function (file) {
+            readImageFile(file).then(function (dataUrl) {
+                pendingImages.push(dataUrl);
+                renderPreviews();
+                refreshPostButton();
+            }).catch(function (err) {
+                alert(err.message);
+            });
+        });
+    }
+
+    function submitPost() {
+        var text = el.composerText.value.trim();
+        if (!text && pendingImages.length === 0) return;
+
+        var post = {
+            id: makeId(),
+            text: text,
+            images: pendingImages.slice(),
+            likes: 0,
+            liked: false,
+            createdAt: Date.now()
+        };
+
+        state.posts.unshift(post); // newest first
+
+        // Feed pictures are also filed into the default album automatically.
+        var albumAdd = post.images.length ? addImagesToDefaultAlbum(post.images) : null;
+
+        if (!Store.save(state)) {
+            // Roll back the in-memory adds if persistence failed (quota).
+            state.posts.shift();
+            if (albumAdd) undoDefaultAlbumAdd(albumAdd);
+            alert("Couldn't save — storage may be full. Try smaller or fewer images.");
+            return;
+        }
+
+        // Reset composer.
+        el.composerText.value = "";
+        pendingImages = [];
+        renderPreviews();
+        updateCharCount();
+        refreshPostButton();
+        renderFeed();
+        renderAlbumStats();
+        if (!el.albumsPanel.hidden) renderAlbums(); // reflect new album/photos if visible
+    }
+
+    // ---- Default album (auto-collects feed pictures) ----
+    var DEFAULT_ALBUM_NAME = "Feed Photos";
+
+    // The default album is identified purely by its name. So if the user renames
+    // or deletes "Feed Photos", it's no longer the default and the next feed
+    // picture simply creates a fresh one.
+    function getDefaultAlbum() {
+        for (var i = 0; i < state.albums.length; i++) {
+            if (state.albums[i].name === DEFAULT_ALBUM_NAME) return state.albums[i];
+        }
+        return null;
+    }
+
+    function addImagesToDefaultAlbum(images) {
+        var album = getDefaultAlbum();
+        var createdNew = false;
+        if (!album) {
+            album = { id: makeId(), name: DEFAULT_ALBUM_NAME, images: [], createdAt: Date.now() };
+            state.albums.unshift(album);
+            createdNew = true;
+        }
+        for (var i = 0; i < images.length; i++) album.images.push(images[i]);
+        return { albumId: album.id, createdNew: createdNew, count: images.length };
+    }
+
+    function undoDefaultAlbumAdd(info) {
+        for (var i = 0; i < state.albums.length; i++) {
+            if (state.albums[i].id === info.albumId) {
+                if (info.createdNew) state.albums.splice(i, 1);
+                else state.albums[i].images.splice(state.albums[i].images.length - info.count, info.count);
+                return;
+            }
+        }
+    }
+
+    // ---- Feed ----
+    function renderFeed() {
+        el.feed.innerHTML = "";
+        el.postCount.textContent = String(state.posts.length);
+        el.emptyState.hidden = state.posts.length > 0;
+
+        state.posts.forEach(function (post) {
+            el.feed.appendChild(buildPostNode(post));
+        });
+    }
+
+    function buildPostNode(post) {
+        var node = el.postTemplate.content.cloneNode(true);
+        var author = state.profile.name.trim() || "You";
+
+        applyAvatar(node.querySelector(".post-avatar"));
+        node.querySelector(".post-author").textContent = author;
+
+        var timeEl = node.querySelector(".post-time");
+        timeEl.textContent = relTime(post.createdAt);
+        timeEl.setAttribute("datetime", new Date(post.createdAt).toISOString());
+
+        var textEl = node.querySelector(".post-text");
+        if (post.text) {
+            textEl.textContent = escapeText(post.text);
+        } else {
+            textEl.remove();
+        }
+
+        var imagesWrap = node.querySelector(".post-images");
+        if (post.images && post.images.length) {
+            var n = post.images.length;
+            imagesWrap.classList.add(n === 1 ? "count-1" : n === 2 ? "count-2" : "count-3plus");
+            post.images.forEach(function (src, i) {
+                var img = document.createElement("img");
+                img.src = src;
+                img.alt = "post image " + (i + 1);
+                img.addEventListener("click", function () { openLightbox(src); });
+                imagesWrap.appendChild(img);
+            });
+        } else {
+            imagesWrap.remove();
+        }
+
+        // Like button
+        var likeBtn = node.querySelector(".like-btn");
+        var likeCount = node.querySelector(".like-count");
+        likeCount.textContent = String(post.likes);
+        if (post.liked) likeBtn.classList.add("liked");
+        likeBtn.firstChild.textContent = post.liked ? "❤️ " : "🤍 ";
+        likeBtn.addEventListener("click", function () { toggleLike(post.id); });
+
+        // Delete button
+        node.querySelector(".post-delete").addEventListener("click", function () {
+            deletePost(post.id);
+        });
+
+        return node;
+    }
+
+    function toggleLike(id) {
+        var post = findPost(id);
+        if (!post) return;
+        post.liked = !post.liked;
+        post.likes += post.liked ? 1 : -1;
+        if (post.likes < 0) post.likes = 0;
+        persist();
+        renderFeed();
+    }
+
+    function deletePost(id) {
+        if (!confirm("Delete this post?")) return;
+        state.posts = state.posts.filter(function (p) { return p.id !== id; });
+        persist();
+        renderFeed();
+    }
+
+    function findPost(id) {
+        for (var i = 0; i < state.posts.length; i++) {
+            if (state.posts[i].id === id) return state.posts[i];
+        }
+        return null;
+    }
+
+    // ---- Lightbox ----
+    function openLightbox(src) {
+        var box = document.createElement("div");
+        box.className = "lightbox";
+
+        var img = document.createElement("img");
+        img.src = src;
+        box.appendChild(img);
+
+        // Action bar (doesn't close the lightbox when clicked).
+        var bar = document.createElement("div");
+        bar.className = "lightbox-bar";
+        var setBtn = document.createElement("button");
+        setBtn.type = "button";
+        setBtn.className = "lightbox-btn";
+        setBtn.textContent = "👤 Set as profile picture";
+        setBtn.addEventListener("click", function (e) {
+            e.stopPropagation();
+            setAvatarFromPicture(src);
+            box.remove();
+        });
+        bar.appendChild(setBtn);
+        box.appendChild(bar);
+
+        box.addEventListener("click", function () { box.remove(); });
+        document.addEventListener("keydown", function esc(e) {
+            if (e.key === "Escape") { box.remove(); document.removeEventListener("keydown", esc); }
+        });
+        document.body.appendChild(box);
+    }
+
+    // ---- Tabs ----
+    function switchTab(tab) {
+        var tabs = {
+            feed:   { btn: el.tabFeed,   panel: el.feedPanel },
+            albums: { btn: el.tabAlbums, panel: el.albumsPanel },
+            sheets: { btn: el.tabSheets, panel: el.sheetsPanel },
+            play:   { btn: el.tabPlay,   panel: el.playPanel }
+        };
+        Object.keys(tabs).forEach(function (key) {
+            var active = key === tab;
+            tabs[key].btn.classList.toggle("is-active", active);
+            tabs[key].panel.hidden = !active;
+        });
+        // The duel (7 cards) and the spreadsheets both want room — give them the
+        // full width by collapsing the side columns on those tabs.
+        el.layout.classList.toggle("wide-mode", tab === "play" || tab === "sheets");
+        if (tab === "albums") renderAlbums();
+        if (tab === "sheets") renderSheets();
+        if (tab === "play") renderGame();
+    }
+
+    // ---- Albums ----
+    function findAlbum(id) {
+        for (var i = 0; i < state.albums.length; i++) {
+            if (state.albums[i].id === id) return state.albums[i];
+        }
+        return null;
+    }
+
+    function createAlbum(name) {
+        name = (name || "").trim();
+        if (!name) return;
+        state.albums.unshift({
+            id: makeId(),
+            name: name,
+            images: [],
+            createdAt: Date.now()
+        });
+        persist();
+        renderAlbums();
+    }
+
+    function deleteAlbum(id) {
+        var album = findAlbum(id);
+        if (!album) return;
+        if (!confirm('Delete the album "' + album.name + '" and its ' +
+                     album.images.length + ' picture(s)?')) return;
+        state.albums = state.albums.filter(function (a) { return a.id !== id; });
+        persist();
+        openAlbumId = null;
+        showAlbumList();
+        renderAlbums();
+    }
+
+    function renameAlbum(id, name) {
+        var album = findAlbum(id);
+        if (!album) return;
+        name = (name || "").trim();
+        if (!name) return; // ignore empty rename; keep old name
+        album.name = name;
+        persist();
+    }
+
+    // Read each chosen file and append it to the album, saving as we go.
+    function addImagesToAlbum(id, fileList) {
+        var album = findAlbum(id);
+        if (!album) return;
+        var files = Array.prototype.slice.call(fileList);
+        files.forEach(function (file) {
+            readImageFile(file).then(function (dataUrl) {
+                album.images.push(dataUrl);
+                if (!Store.save(state)) {
+                    album.images.pop();
+                    alert("Couldn't save — storage may be full. Try smaller or fewer images.");
+                    return;
+                }
+                if (openAlbumId === id) renderAlbumDetail();
+                renderAlbumStats();
+            }).catch(function (err) {
+                alert(err.message);
+            });
+        });
+    }
+
+    function removeImageFromAlbum(id, index) {
+        var album = findAlbum(id);
+        if (!album) return;
+        album.images.splice(index, 1);
+        persist();
+        renderAlbumDetail();
+    }
+
+    function renderAlbumStats() {
+        el.albumCount.textContent = String(state.albums.length);
+    }
+
+    // List view: a grid of album cards.
+    function renderAlbums() {
+        renderAlbumStats();
+        el.albumGrid.innerHTML = "";
+        el.albumsEmptyState.hidden = state.albums.length > 0;
+
+        state.albums.forEach(function (album) {
+            var card = document.createElement("button");
+            card.type = "button";
+            card.className = "album-card";
+            card.title = "Open album";
+
+            var cover = document.createElement("div");
+            cover.className = "album-cover";
+            if (album.images.length) {
+                var img = document.createElement("img");
+                img.src = album.images[0];
+                img.alt = album.name;
+                cover.appendChild(img);
+            } else {
+                cover.textContent = "📁";
+                cover.classList.add("empty");
+            }
+
+            var name = document.createElement("div");
+            name.className = "album-card-name";
+            name.textContent = album.name;
+
+            var count = document.createElement("div");
+            count.className = "album-card-count";
+            count.textContent = album.images.length +
+                (album.images.length === 1 ? " picture" : " pictures");
+
+            card.appendChild(cover);
+            card.appendChild(name);
+            card.appendChild(count);
+            card.addEventListener("click", function () { openAlbum(album.id); });
+            el.albumGrid.appendChild(card);
+        });
+    }
+
+    function showAlbumList() {
+        el.albumDetailView.hidden = true;
+        el.albumListView.hidden = false;
+    }
+
+    function openAlbum(id) {
+        openAlbumId = id;
+        el.albumListView.hidden = true;
+        el.albumDetailView.hidden = false;
+        renderAlbumDetail();
+    }
+
+    // Detail view: title, add/delete controls, and the album's pictures.
+    function renderAlbumDetail() {
+        var album = findAlbum(openAlbumId);
+        if (!album) { showAlbumList(); return; }
+
+        el.albumTitleInput.value = album.name;
+        el.albumImages.innerHTML = "";
+        el.albumDetailEmptyState.hidden = album.images.length > 0;
+
+        album.images.forEach(function (src, index) {
+            var cell = document.createElement("div");
+            cell.className = "album-thumb";
+
+            var img = document.createElement("img");
+            img.src = src;
+            img.alt = album.name + " picture " + (index + 1);
+            img.addEventListener("click", function () { openLightbox(src); });
+
+            var move = document.createElement("button");
+            move.type = "button";
+            move.className = "album-thumb-move";
+            move.title = "Move to another album";
+            move.textContent = "⇄";
+            move.addEventListener("click", function (e) {
+                e.stopPropagation();
+                openMoveMenu(cell, album.id, index);
+            });
+
+            var setAv = document.createElement("button");
+            setAv.type = "button";
+            setAv.className = "album-thumb-avatar";
+            setAv.title = "Use as profile picture";
+            setAv.textContent = "👤";
+            setAv.addEventListener("click", function (e) {
+                e.stopPropagation();
+                setAvatarFromPicture(src);
+            });
+
+            var del = document.createElement("button");
+            del.type = "button";
+            del.className = "album-thumb-del";
+            del.title = "Remove picture";
+            del.textContent = "✕";
+            del.addEventListener("click", function () {
+                removeImageFromAlbum(album.id, index);
+            });
+
+            cell.appendChild(img);
+            cell.appendChild(move);
+            cell.appendChild(setAv);
+            cell.appendChild(del);
+            el.albumImages.appendChild(cell);
+        });
+    }
+
+    // Move a picture from one album to another.
+    function moveImageToAlbum(fromId, index, toId) {
+        if (fromId === toId) { closeMoveMenus(); return; }
+        var from = findAlbum(fromId), to = findAlbum(toId);
+        if (!from || !to) return;
+        var img = from.images.splice(index, 1)[0];
+        if (img == null) return;
+        to.images.push(img);
+        persist();
+        closeMoveMenus();
+        renderAlbumDetail();
+        renderAlbumStats();
+    }
+
+    function closeMoveMenus() {
+        var menus = document.querySelectorAll(".album-move-menu");
+        Array.prototype.forEach.call(menus, function (m) { m.remove(); });
+    }
+
+    // Small popover listing the other albums (plus "new album") to move into.
+    function openMoveMenu(anchorCell, fromId, index) {
+        closeMoveMenus();
+        var menu = document.createElement("div");
+        menu.className = "album-move-menu";
+
+        var others = state.albums.filter(function (a) { return a.id !== fromId; });
+        if (!others.length) {
+            var none = document.createElement("div");
+            none.className = "album-move-empty";
+            none.textContent = "No other albums yet";
+            menu.appendChild(none);
+        } else {
+            others.forEach(function (a) {
+                var opt = document.createElement("button");
+                opt.type = "button";
+                opt.className = "album-move-opt";
+                opt.textContent = a.name + " (" + a.images.length + ")";
+                opt.addEventListener("click", function (e) {
+                    e.stopPropagation();
+                    moveImageToAlbum(fromId, index, a.id);
+                });
+                menu.appendChild(opt);
+            });
+        }
+
+        var newOpt = document.createElement("button");
+        newOpt.type = "button";
+        newOpt.className = "album-move-opt album-move-new";
+        newOpt.textContent = "＋ New album…";
+        newOpt.addEventListener("click", function (e) {
+            e.stopPropagation();
+            var name = prompt("New album name:");
+            if (name == null) return;
+            name = name.trim();
+            if (!name) return;
+            var album = { id: makeId(), name: name, images: [], createdAt: Date.now() };
+            state.albums.unshift(album);
+            moveImageToAlbum(fromId, index, album.id);
+        });
+        menu.appendChild(newOpt);
+
+        anchorCell.appendChild(menu);
+    }
+
+    // ---- To-Do ----
+    function findTodo(id) {
+        for (var i = 0; i < state.todos.length; i++) {
+            if (state.todos[i].id === id) return state.todos[i];
+        }
+        return null;
+    }
+
+    function activeTodoCount() {
+        return state.todos.filter(function (t) { return !t.done; }).length;
+    }
+
+    function addTodo(text) {
+        text = (text || "").trim();
+        if (!text) return;
+        state.todos.push({ // oldest first
+            id: makeId(),
+            text: text,
+            done: false,
+            createdAt: Date.now()
+        });
+        persist();
+        renderTodos();
+    }
+
+    function toggleTodo(id) {
+        var todo = findTodo(id);
+        if (!todo) return;
+        todo.done = !todo.done;
+        persist();
+        renderTodos();
+    }
+
+    function editTodo(id, text) {
+        var todo = findTodo(id);
+        if (!todo) return;
+        text = (text || "").trim();
+        if (!text) { deleteTodo(id, true); return; } // emptied -> remove
+        todo.text = text;
+        persist();
+    }
+
+    function deleteTodo(id, skipConfirm) {
+        if (!skipConfirm && !confirm("Delete this task?")) return;
+        state.todos = state.todos.filter(function (t) { return t.id !== id; });
+        persist();
+        renderTodos();
+    }
+
+    function clearCompleted() {
+        var done = state.todos.filter(function (t) { return t.done; }).length;
+        if (!done) return;
+        if (!confirm("Remove " + done + " completed task(s)?")) return;
+        state.todos = state.todos.filter(function (t) { return !t.done; });
+        persist();
+        renderTodos();
+    }
+
+    function setTodoFilter(filter) {
+        todoFilter = filter;
+        var btns = el.todosPanel.querySelectorAll(".todo-filter");
+        Array.prototype.forEach.call(btns, function (b) {
+            b.classList.toggle("is-active", b.getAttribute("data-filter") === filter);
+        });
+        renderTodos();
+    }
+
+    function renderTodoStats() {
+        el.todoCount.textContent = String(activeTodoCount());
+    }
+
+    function renderTodos() {
+        renderTodoStats();
+
+        var visible = state.todos.filter(function (t) {
+            if (todoFilter === "active") return !t.done;
+            if (todoFilter === "done") return t.done;
+            return true;
+        });
+
+        el.todoList.innerHTML = "";
+        el.todosEmptyState.hidden = visible.length > 0;
+        el.todoFooter.hidden = state.todos.length === 0;
+
+        var remaining = activeTodoCount();
+        el.todoRemaining.textContent = remaining + (remaining === 1 ? " item left" : " items left");
+
+        visible.forEach(function (todo) {
+            var li = document.createElement("li");
+            li.className = "todo-item" + (todo.done ? " done" : "");
+
+            var check = document.createElement("input");
+            check.type = "checkbox";
+            check.className = "todo-check";
+            check.checked = todo.done;
+            check.addEventListener("change", function () { toggleTodo(todo.id); });
+
+            // Editable, wrapping text (contenteditable so long tasks wrap to
+            // multiple lines instead of being clipped). Saves on blur.
+            var text = document.createElement("div");
+            text.className = "todo-text";
+            text.contentEditable = "true";
+            text.spellcheck = false;
+            text.textContent = todo.text;
+            text.addEventListener("blur", function () { editTodo(todo.id, text.textContent); });
+            text.addEventListener("keydown", function (e) {
+                if (e.key === "Enter") { e.preventDefault(); text.blur(); }
+            });
+
+            var del = document.createElement("button");
+            del.type = "button";
+            del.className = "todo-del";
+            del.title = "Delete task";
+            del.textContent = "✕";
+            del.addEventListener("click", function () { deleteTodo(todo.id); });
+
+            li.appendChild(check);
+            li.appendChild(text);
+            li.appendChild(del);
+            el.todoList.appendChild(li);
+        });
+    }
+
+    // ---- Sheets (mini spreadsheets) ----
+    function findSheet(id) {
+        for (var i = 0; i < state.sheets.length; i++) {
+            if (state.sheets[i].id === id) return state.sheets[i];
+        }
+        return null;
+    }
+
+    // Pull a number out of a cell, tolerating "$", "kg", thousands commas, etc.
+    // Returns null when the cell holds no number.
+    function parseNum(value) {
+        var cleaned = String(value == null ? "" : value).replace(/[^0-9.\-]/g, "");
+        if (cleaned === "" || cleaned === "-" || cleaned === ".") return null;
+        var n = parseFloat(cleaned);
+        return isNaN(n) ? null : n;
+    }
+
+    function formatSum(n) {
+        if (Number.isInteger(n)) return String(n);
+        return n.toFixed(2);
+    }
+
+    function createSheet(name) {
+        name = (name || "").trim();
+        if (!name) return;
+        state.sheets.unshift({
+            id: makeId(),
+            name: name,
+            columns: ["Column 1", "Column 2"],
+            rows: [["", ""]],
+            createdAt: Date.now()
+        });
+        persist();
+        renderSheets();
+    }
+
+    function deleteSheet(id) {
+        var sheet = findSheet(id);
+        if (!sheet) return;
+        if (!confirm('Delete the spreadsheet "' + sheet.name + '"?')) return;
+        state.sheets = state.sheets.filter(function (s) { return s.id !== id; });
+        persist();
+        openSheetId = null;
+        showSheetList();
+        renderSheets();
+    }
+
+    function renameSheet(id, name) {
+        var sheet = findSheet(id);
+        if (!sheet) return;
+        name = (name || "").trim();
+        if (!name) return;
+        sheet.name = name;
+        persist();
+    }
+
+    function addColumn(id) {
+        var sheet = findSheet(id);
+        if (!sheet) return;
+        sheet.columns.push("Column " + (sheet.columns.length + 1));
+        sheet.rows.forEach(function (row) { row.push(""); });
+        persist();
+        renderSheetDetail();
+    }
+
+    function deleteColumn(id, colIndex) {
+        var sheet = findSheet(id);
+        if (!sheet) return;
+        if (!confirm('Delete column "' + sheet.columns[colIndex] + '"?')) return;
+        sheet.columns.splice(colIndex, 1);
+        sheet.rows.forEach(function (row) { row.splice(colIndex, 1); });
+        persist();
+        renderSheetDetail();
+    }
+
+    function renameColumn(id, colIndex, name) {
+        var sheet = findSheet(id);
+        if (!sheet) return;
+        sheet.columns[colIndex] = (name || "").trim() || ("Column " + (colIndex + 1));
+        persist();
+    }
+
+    function addRow(id) {
+        var sheet = findSheet(id);
+        if (!sheet) return;
+        var blank = sheet.columns.map(function () { return ""; });
+        sheet.rows.push(blank);
+        persist();
+        renderSheetDetail();
+    }
+
+    function deleteRow(id, rowIndex) {
+        var sheet = findSheet(id);
+        if (!sheet) return;
+        sheet.rows.splice(rowIndex, 1);
+        persist();
+        renderSheetDetail();
+    }
+
+    // Update one cell without re-rendering, so tabbing between cells is smooth.
+    function setCell(id, rowIndex, colIndex, value) {
+        var sheet = findSheet(id);
+        if (!sheet || !sheet.rows[rowIndex]) return;
+        sheet.rows[rowIndex][colIndex] = value;
+        persist();
+        updateTotalsRow(sheet);
+    }
+
+    function columnSums(sheet) {
+        return sheet.columns.map(function (_, c) {
+            var any = false, total = 0;
+            sheet.rows.forEach(function (row) {
+                var n = parseNum(row[c]);
+                if (n !== null) { any = true; total += n; }
+            });
+            return any ? formatSum(total) : "";
+        });
+    }
+
+    function renderSheetStats() {
+        el.sheetCount.textContent = String(state.sheets.length);
+    }
+
+    // List view: a grid of spreadsheet cards.
+    function renderSheets() {
+        renderSheetStats();
+        el.sheetGrid.innerHTML = "";
+        el.sheetsEmptyState.hidden = state.sheets.length > 0;
+
+        state.sheets.forEach(function (sheet) {
+            var card = document.createElement("button");
+            card.type = "button";
+            card.className = "sheet-card";
+            card.title = "Open spreadsheet";
+
+            var icon = document.createElement("div");
+            icon.className = "sheet-card-icon";
+            icon.textContent = "📊";
+
+            var name = document.createElement("div");
+            name.className = "sheet-card-name";
+            name.textContent = sheet.name;
+
+            var dims = document.createElement("div");
+            dims.className = "sheet-card-dims";
+            dims.textContent = sheet.rows.length + " × " + sheet.columns.length +
+                " (rows × cols)";
+
+            card.appendChild(icon);
+            card.appendChild(name);
+            card.appendChild(dims);
+            card.addEventListener("click", function () { openSheet(sheet.id); });
+            el.sheetGrid.appendChild(card);
+        });
+    }
+
+    function showSheetList() {
+        el.sheetDetailView.hidden = true;
+        el.sheetListView.hidden = false;
+    }
+
+    function openSheet(id) {
+        openSheetId = id;
+        el.sheetListView.hidden = true;
+        el.sheetDetailView.hidden = false;
+        renderSheetDetail();
+    }
+
+    // Detail view: build the editable table from scratch.
+    function renderSheetDetail() {
+        var sheet = findSheet(openSheetId);
+        if (!sheet) { showSheetList(); return; }
+
+        el.sheetTitleInput.value = sheet.name;
+        el.sheetTableWrap.innerHTML = "";
+
+        var hasColumns = sheet.columns.length > 0;
+        el.sheetEmptyState.hidden = hasColumns;
+        el.addRowBtn.disabled = !hasColumns;
+        if (!hasColumns) return;
+
+        var table = document.createElement("table");
+        table.className = "sheet-table";
+
+        // --- Header: a rename input + delete button per column ---
+        var thead = document.createElement("thead");
+        var headRow = document.createElement("tr");
+        headRow.appendChild(document.createElement("th")); // corner cell (row controls)
+
+        sheet.columns.forEach(function (colName, c) {
+            var th = document.createElement("th");
+
+            var nameInput = document.createElement("input");
+            nameInput.type = "text";
+            nameInput.className = "col-name";
+            nameInput.value = colName;
+            nameInput.maxLength = 40;
+            nameInput.addEventListener("change", function () {
+                renameColumn(sheet.id, c, nameInput.value);
+            });
+
+            var delCol = document.createElement("button");
+            delCol.type = "button";
+            delCol.className = "col-del";
+            delCol.title = "Delete column";
+            delCol.textContent = "✕";
+            delCol.addEventListener("click", function () { deleteColumn(sheet.id, c); });
+
+            th.appendChild(nameInput);
+            th.appendChild(delCol);
+            headRow.appendChild(th);
+        });
+        thead.appendChild(headRow);
+        table.appendChild(thead);
+
+        // --- Body: one editable input per cell ---
+        var tbody = document.createElement("tbody");
+        sheet.rows.forEach(function (row, r) {
+            var tr = document.createElement("tr");
+
+            var ctrlCell = document.createElement("td");
+            ctrlCell.className = "row-ctrl";
+            var delRow = document.createElement("button");
+            delRow.type = "button";
+            delRow.className = "row-del";
+            delRow.title = "Delete row";
+            delRow.textContent = "✕";
+            delRow.addEventListener("click", function () { deleteRow(sheet.id, r); });
+            ctrlCell.appendChild(delRow);
+            tr.appendChild(ctrlCell);
+
+            sheet.columns.forEach(function (_, c) {
+                var td = document.createElement("td");
+                var cell = document.createElement("input");
+                cell.type = "text";
+                cell.className = "cell";
+                cell.value = row[c] != null ? row[c] : "";
+                cell.addEventListener("change", function () {
+                    setCell(sheet.id, r, c, cell.value);
+                });
+                td.appendChild(cell);
+                tr.appendChild(td);
+            });
+            tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+
+        // --- Footer: per-column totals (blank when the column has no numbers) ---
+        var tfoot = document.createElement("tfoot");
+        table.appendChild(tfoot);
+
+        el.sheetTableWrap.appendChild(table);
+        updateTotalsRow(sheet);
+    }
+
+    // Rewrite just the totals row, leaving editable inputs (and focus) untouched.
+    function updateTotalsRow(sheet) {
+        var tfoot = el.sheetTableWrap.querySelector("tfoot");
+        if (!tfoot) return;
+        tfoot.innerHTML = "";
+
+        var sums = columnSums(sheet);
+        var tr = document.createElement("tr");
+        tr.className = "totals-row";
+
+        var label = document.createElement("td");
+        label.className = "totals-label";
+        label.textContent = "Σ";
+        tr.appendChild(label);
+
+        sums.forEach(function (sum) {
+            var td = document.createElement("td");
+            td.className = "totals-cell";
+            td.textContent = sum;
+            tr.appendChild(td);
+        });
+        tfoot.appendChild(tr);
+    }
+
+    // ---- Sheets: CSV export / import ----
+
+    // Quote a field only when it contains a comma, quote, or newline (RFC 4180).
+    function csvEscape(value) {
+        var v = value == null ? "" : String(value);
+        if (/[",\r\n]/.test(v)) {
+            return '"' + v.replace(/"/g, '""') + '"';
+        }
+        return v;
+    }
+
+    function sheetToCsv(sheet) {
+        var lines = [sheet.columns.map(csvEscape).join(",")];
+        sheet.rows.forEach(function (row) {
+            lines.push(row.map(csvEscape).join(","));
+        });
+        return lines.join("\r\n");
+    }
+
+    // Parse CSV text into an array of string arrays. Handles quoted fields,
+    // embedded commas/newlines, doubled quotes, and CRLF or LF line endings.
+    function csvParse(text) {
+        var rows = [], row = [], field = "", inQuotes = false, i = 0;
+        while (i < text.length) {
+            var ch = text.charAt(i);
+            if (inQuotes) {
+                if (ch === '"') {
+                    if (text.charAt(i + 1) === '"') { field += '"'; i += 2; continue; }
+                    inQuotes = false; i++; continue;
+                }
+                field += ch; i++; continue;
+            }
+            if (ch === '"') { inQuotes = true; i++; continue; }
+            if (ch === ",") { row.push(field); field = ""; i++; continue; }
+            if (ch === "\r") {
+                if (text.charAt(i + 1) === "\n") i++;
+                row.push(field); field = ""; rows.push(row); row = []; i++; continue;
+            }
+            if (ch === "\n") {
+                row.push(field); field = ""; rows.push(row); row = []; i++; continue;
+            }
+            field += ch; i++;
+        }
+        row.push(field);
+        rows.push(row);
+        // Drop a trailing blank line (file ended with a newline).
+        if (rows.length && rows[rows.length - 1].length === 1 && rows[rows.length - 1][0] === "") {
+            rows.pop();
+        }
+        return rows;
+    }
+
+    function normalizeRow(row, width) {
+        var r = row.slice(0, width);
+        while (r.length < width) r.push("");
+        return r;
+    }
+
+    // Build a {columns, rows} grid from parsed CSV (first line = headers).
+    function gridFromCsv(text) {
+        var parsed = csvParse(text);
+        if (!parsed.length) return null;
+        var columns = parsed[0].map(function (h, i) {
+            return String(h).trim() || ("Column " + (i + 1));
+        });
+        if (!columns.length) return null;
+        var rows = parsed.slice(1).map(function (r) { return normalizeRow(r, columns.length); });
+        return { columns: columns, rows: rows };
+    }
+
+    // Data rows from a CSV (header row skipped), each fitted to `width` columns.
+    // Used by append-on-import so the existing sheet's columns are kept.
+    function rowsFromCsvBody(text, width) {
+        var parsed = csvParse(text);
+        if (parsed.length < 2) return []; // header-only or empty -> no data
+        return parsed.slice(1).map(function (r) { return normalizeRow(r, width); });
+    }
+
+    function sanitizeFilename(name) {
+        return (name || "spreadsheet").replace(/[\\/:*?"<>|]+/g, "_").trim() || "spreadsheet";
+    }
+
+    function downloadCsv(filename, csv) {
+        // Prepend a BOM so Excel reads UTF-8 correctly. Blob + object URL works on file://.
+        var blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(function () { URL.revokeObjectURL(url); }, 0);
+    }
+
+    function exportSheet(id) {
+        var sheet = findSheet(id);
+        if (!sheet) return;
+        downloadCsv(sanitizeFilename(sheet.name) + ".csv", sheetToCsv(sheet));
+    }
+
+    function readTextFile(file) {
+        return new Promise(function (resolve, reject) {
+            var reader = new FileReader();
+            reader.onload = function () { resolve(reader.result); };
+            reader.onerror = function () { reject(reader.error); };
+            reader.readAsText(file);
+        });
+    }
+
+    // Replace the open sheet's contents with an imported CSV.
+    function importCsvIntoSheet(id, file) {
+        var sheet = findSheet(id);
+        if (!sheet) return;
+        var hasData = sheet.rows.some(function (r) {
+            return r.some(function (c) { return String(c).trim() !== ""; });
+        });
+        if (hasData && !confirm('Replace the contents of "' + sheet.name + '" with this CSV?')) return;
+
+        readTextFile(file).then(function (text) {
+            var grid = gridFromCsv(text);
+            if (!grid) { alert("That CSV looks empty — nothing to import."); return; }
+            sheet.columns = grid.columns;
+            sheet.rows = grid.rows;
+            if (!Store.save(state)) {
+                alert("Couldn't save — storage may be full.");
+                return;
+            }
+            renderSheetDetail();
+        }).catch(function (err) {
+            alert("Could not read the file: " + (err && err.message ? err.message : err));
+        });
+    }
+
+    // Append a CSV's data rows to the end of the open sheet (columns unchanged).
+    function appendCsvToSheet(id, file) {
+        var sheet = findSheet(id);
+        if (!sheet) return;
+        if (!sheet.columns.length) {
+            alert("Add a column first — there's nowhere to append rows yet.");
+            return;
+        }
+        readTextFile(file).then(function (text) {
+            var newRows = rowsFromCsvBody(text, sheet.columns.length);
+            if (!newRows.length) {
+                alert("No data rows to append (the CSV had only a header row, or was empty).");
+                return;
+            }
+            sheet.rows = sheet.rows.concat(newRows);
+            if (!Store.save(state)) {
+                sheet.rows = sheet.rows.slice(0, sheet.rows.length - newRows.length); // roll back
+                alert("Couldn't save — storage may be full.");
+                return;
+            }
+            renderSheetDetail();
+        }).catch(function (err) {
+            alert("Could not read the file: " + (err && err.message ? err.message : err));
+        });
+    }
+
+    // Create a brand-new sheet from a CSV file (named after the file).
+    function importCsvAsNewSheet(file) {
+        readTextFile(file).then(function (text) {
+            var grid = gridFromCsv(text);
+            if (!grid) { alert("That CSV looks empty — nothing to import."); return; }
+            var name = file.name.replace(/\.csv$/i, "").trim() || "Imported sheet";
+            state.sheets.unshift({
+                id: makeId(),
+                name: name,
+                columns: grid.columns,
+                rows: grid.rows,
+                createdAt: Date.now()
+            });
+            if (!Store.save(state)) {
+                state.sheets.shift();
+                alert("Couldn't save — storage may be full.");
+                return;
+            }
+            renderSheets();
+        }).catch(function (err) {
+            alert("Could not read the file: " + (err && err.message ? err.message : err));
+        });
+    }
+
+    // ---- Daily reminders ----
+    function findReminder(id) {
+        var items = state.reminders.items;
+        for (var i = 0; i < items.length; i++) {
+            if (items[i].id === id) return items[i];
+        }
+        return null;
+    }
+
+    // If the day rolled over since the checks were last saved, clear them.
+    // Returns true when something changed (so callers can persist).
+    function rolloverReminders() {
+        var today = todayStr();
+        if (state.reminders.checkedDate !== today) {
+            state.reminders.checkedDate = today;
+            state.reminders.checked = {};
+            return true;
+        }
+        return false;
+    }
+
+    function addReminder(text) {
+        text = (text || "").trim();
+        if (!text) return;
+        state.reminders.items.push({ id: makeId(), text: text });
+        persist();
+        renderReminders();
+    }
+
+    function editReminder(id, text) {
+        var item = findReminder(id);
+        if (!item) return;
+        text = (text || "").trim();
+        if (!text) { deleteReminder(id); return; } // emptied -> remove
+        item.text = text;
+        persist();
+    }
+
+    function deleteReminder(id) {
+        state.reminders.items = state.reminders.items.filter(function (r) { return r.id !== id; });
+        delete state.reminders.checked[id];
+        persist();
+        renderReminders();
+    }
+
+    function toggleReminder(id) {
+        if (state.reminders.checked[id]) {
+            delete state.reminders.checked[id];
+        } else {
+            state.reminders.checked[id] = true;
+        }
+        creditStreakIfComplete();
+        persist();
+        renderReminders();
+    }
+
+    function uncheckedReminders() {
+        return state.reminders.items.filter(function (it) {
+            return !state.reminders.checked[it.id];
+        });
+    }
+
+    function allRemindersDone() {
+        return state.reminders.items.length > 0 && uncheckedReminders().length === 0;
+    }
+
+    // Bump the streak the first time every reminder is completed on a given day.
+    function creditStreakIfComplete() {
+        if (!allRemindersDone()) return;
+        var today = todayStr();
+        if (state.reminders.streakDate === today) return; // already credited today
+        if (state.reminders.streakDate === yesterdayStr()) {
+            state.reminders.streak = (state.reminders.streak || 0) + 1;
+        } else {
+            state.reminders.streak = 1; // start fresh
+        }
+        state.reminders.streakDate = today;
+    }
+
+    // The streak only "counts" if it was credited today or yesterday; a fully
+    // missed day breaks it (shown as 0 until the user completes a day again).
+    function effectiveStreak() {
+        var sd = state.reminders.streakDate;
+        if (sd === todayStr() || sd === yesterdayStr()) return state.reminders.streak || 0;
+        return 0;
+    }
+
+    function renderReminders() {
+        if (rolloverReminders()) persist(); // fresh day -> wipe yesterday's checks
+
+        // Friendly date label, e.g. "Sun, Jun 1".
+        var now = new Date();
+        el.remindersDate.textContent = now.toLocaleDateString(undefined, {
+            weekday: "short", month: "short", day: "numeric"
+        });
+
+        el.reminderList.innerHTML = "";
+        var items = state.reminders.items;
+        el.remindersEmptyState.hidden = items.length > 0;
+
+        var doneCount = 0;
+        items.forEach(function (item) {
+            var done = !!state.reminders.checked[item.id];
+            if (done) doneCount++;
+
+            var li = document.createElement("li");
+            li.className = "reminder-item" + (done ? " done" : "");
+
+            var check = document.createElement("input");
+            check.type = "checkbox";
+            check.className = "reminder-check";
+            check.checked = done;
+            check.addEventListener("change", function () { toggleReminder(item.id); });
+
+            var text = document.createElement("input");
+            text.type = "text";
+            text.className = "reminder-text";
+            text.value = item.text;
+            text.maxLength = 80;
+            text.addEventListener("change", function () { editReminder(item.id, text.value); });
+            text.addEventListener("keydown", function (e) { if (e.key === "Enter") text.blur(); });
+
+            var del = document.createElement("button");
+            del.type = "button";
+            del.className = "reminder-del";
+            del.title = "Remove reminder";
+            del.textContent = "✕";
+            del.addEventListener("click", function () { deleteReminder(item.id); });
+
+            li.appendChild(check);
+            li.appendChild(text);
+            li.appendChild(del);
+            el.reminderList.appendChild(li);
+        });
+
+        var streak = effectiveStreak();
+        var progress = doneCount + " of " + items.length + " done today";
+        el.reminderProgress.textContent = streak > 0 ? (progress + " · 🔥 " + streak + "-day streak") : progress;
+
+        updateMascotLine(); // keep the mascot in sync with the latest state
+    }
+
+    // ---- Chibi mascot ----
+    var QUOTES = [
+        "“The secret of getting ahead is getting started.” ✨",
+        "“Little by little, one travels far.” 🌱",
+        "“You don't have to be great to start, but you have to start to be great.”",
+        "“A year from now you'll wish you had started today.”",
+        "“Progress, not perfection.” 💪",
+        "“Do something today that your future self will thank you for.”",
+        "“Small steps every day add up to big results.”",
+        "“Be kind to yourself — you're doing better than you think.” 💜",
+        "“The best time to plant a tree was 20 years ago. The second best is now.”",
+        "“Discipline is choosing what you want most over what you want now.”"
     ];
-    if (state.description) summary.push([T("Description"), T(state.description)]);
-    summary.push([T("Result shown for"), T(sourceLabel)]);
-    summary.push([T("Priority method"), T("Principal eigenvector (power iteration)")]);
-    summary.push([]);
-    summary.push([H("Rank"), H("Alternative"), H("Priority"), H("Priority %")]);
-    ranked.forEach((r, pos) => summary.push([N(pos + 1), T(r.name), N(r.score), N(r.score * 100)]));
-    sheets.push({ name: "Summary", rows: summary });
 
-    const cw = [[H("Criterion (path)"), H("Local weight"), H("Global weight"), H("Global %")]];
-    leaves.forEach((l) => cw.push([T(path(l)), N(weights[l.id].local), N(weights[l.id].global), N(weights[l.id].global * 100)]));
-    sheets.push({ name: "Criteria Weights", rows: cw });
+    var lastMascotLine = "";
 
-    const dm = [[H("Alternative"), ...leaves.map((l) => H(path(l))), H("Final score")]];
-    state.alternatives.forEach((name, a) => dm.push([T(name), ...leaves.map((l, c) => N(altWeightsPerLeaf[c][a])), N(scores[a])]));
-    dm.push([]);
-    dm.push([T("Leaf global weight"), ...leaves.map((l, c) => N(leafWeights[c]))]);
-    sheets.push({ name: "Decision Matrix", rows: dm });
+    function lower1(s) { return s ? s.charAt(0).toLowerCase() + s.slice(1) : s; }
+    function randOf(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 
-    const cons = [[H("Comparison"), H("Size"), H("Consistency Ratio"), H("CR %"), H("lambda_max"), H("Consistent?")]];
-    comparisonItems().forEach((item) => {
-      const res = AHP.analyze(itemMatrix(item, source));
-      const label = item.kind === "crit"
-        ? (item.id === "root" ? "Criteria" : path(item.node) + " (sub-criteria)")
-        : "Alternatives by " + path(item.node);
-      cons.push([T(label), N(itemLabels(item).length), N(res.cr), N(res.cr * 100), N(res.lambdaMax), T(res.consistent ? "Yes" : "No")]);
-    });
-    sheets.push({ name: "Consistency", rows: cons });
+    // Assemble a pool of context-aware lines, then pick one.
+    function buildMascotLines() {
+        var lines = [];
 
-    if (state.respondents.length > 1) {
-      const br = [[H("Alternative"), ...state.respondents.map((r) => H(r.name)), H("Group (avg)")]];
-      const perRes = state.respondents.map((r) => scoresFor(r, leaves).scores);
-      const groupScores = scoresFor(aggregatedSource(), leaves).scores;
-      state.alternatives.forEach((name, a) => br.push([T(name), ...perRes.map((s) => N(s[a])), N(groupScores[a])]));
-      sheets.push({ name: "By Respondent", rows: br });
+        // Streak
+        var streak = effectiveStreak();
+        if (streak >= 2) lines.push("🔥 " + streak + "-day reminder streak! You're on a roll — keep it going!");
+        else if (streak === 1) lines.push("That's a 1-day streak going. Come back tomorrow to build it! 🔥");
+
+        // Reminders: all done, or nudges about missed ones
+        var missed = uncheckedReminders();
+        if (state.reminders.items.length && missed.length === 0) {
+            lines.push("You've ticked off every daily reminder. Amazing work! 🎉");
+        }
+        missed.forEach(function (r) {
+            lines.push("Don't forget to " + lower1(r.text) + " today!");
+        });
+        if (missed.length) {
+            var m = randOf(missed);
+            lines.push("Have you had a chance to " + lower1(m.text) + " yet?");
+        }
+
+        // To-do list
+        var active = state.todos.filter(function (t) { return !t.done; });
+        if (active.length) {
+            lines.push("Psst… “" + randOf(active).text + "” is still on your to-do list.");
+            if (active.length >= 3) lines.push("You've got " + active.length + " tasks waiting. Knock one out? ✅");
+        }
+
+        // Pictures / albums / feed
+        if (state.posts.length === 0) lines.push("Your feed looks quiet — share what's on your mind! ✍️");
+        lines.push("Maybe upload a photo from today? 📸");
+        if (state.albums.length === 0) lines.push("Try starting an album to organize your pictures. 🖼");
+
+        // Gentle prompts
+        lines.push("How's your day going so far?");
+        lines.push("Have you taken a quiet moment to pray today? 🙏");
+        lines.push("What's one thing you're grateful for right now? 💜");
+        lines.push("Anything on your mind you'd like to reflect on today?");
+        lines.push("Did you learn something new today? 📚");
+        if (!state.profile.status) lines.push("Set a status to capture how you're feeling today.");
+
+        // Inspiration
+        Array.prototype.push.apply(lines, QUOTES);
+
+        return lines;
     }
-    return sheets;
-  }
 
-  const STYLES_XML =
-    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-    `<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">` +
-    `<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>` +
-    `<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>` +
-    `<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>` +
-    `<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>` +
-    `<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>` +
-    `<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs>` +
-    `<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>` +
-    `</styleSheet>`;
-
-  function buildXlsx() {
-    const sheets = buildWorkbookSheets();
-    const enc = new TextEncoder();
-    const parts = [];
-
-    const ct =
-      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-      `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
-      `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
-      `<Default Extension="xml" ContentType="application/xml"/>` +
-      `<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>` +
-      `<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>` +
-      sheets.map((s, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join("") +
-      `</Types>`;
-    parts.push({ name: "[Content_Types].xml", bytes: enc.encode(ct) });
-
-    parts.push({ name: "_rels/.rels", bytes: enc.encode(
-      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-      `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
-      `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>` +
-      `</Relationships>`) });
-
-    const sheetTags = sheets.map((s, i) => `<sheet name="${escapeXml(s.name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join("");
-    parts.push({ name: "xl/workbook.xml", bytes: enc.encode(
-      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-      `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">` +
-      `<sheets>${sheetTags}</sheets></workbook>`) });
-
-    const relTags = sheets.map((s, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join("");
-    parts.push({ name: "xl/_rels/workbook.xml.rels", bytes: enc.encode(
-      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-      `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
-      relTags +
-      `<Relationship Id="rId${sheets.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>` +
-      `</Relationships>`) });
-
-    parts.push({ name: "xl/styles.xml", bytes: enc.encode(STYLES_XML) });
-    sheets.forEach((s, i) => parts.push({ name: `xl/worksheets/sheet${i + 1}.xml`, bytes: enc.encode(sheetXml(s.rows)) }));
-
-    return makeZip(parts);
-  }
-
-  // Minimal ZIP (store method) with CRC-32 — enough for Excel to open.
-  function crc32(bytes) {
-    let crc = ~0;
-    for (let i = 0; i < bytes.length; i++) {
-      crc ^= bytes[i];
-      for (let k = 0; k < 8; k++) crc = (crc >>> 1) ^ (0xEDB88320 & -(crc & 1));
+    function updateMascotLine() {
+        var lines = buildMascotLines();
+        if (!lines.length) return;
+        var line = randOf(lines), tries = 0;
+        while (line === lastMascotLine && tries < 6 && lines.length > 1) { line = randOf(lines); tries++; }
+        lastMascotLine = line;
+        el.mascotBubble.textContent = line;
+        // Replay the little pop animation.
+        el.mascotBubble.classList.remove("pop");
+        void el.mascotBubble.offsetWidth; // force reflow so the animation restarts
+        el.mascotBubble.classList.add("pop");
     }
-    return (~crc) >>> 0;
-  }
-  function makeZip(entries) {
-    const u16 = (a, n) => a.push(n & 0xff, (n >>> 8) & 0xff);
-    const u32 = (a, n) => a.push(n & 0xff, (n >>> 8) & 0xff, (n >>> 16) & 0xff, (n >>> 24) & 0xff);
-    const enc = new TextEncoder();
-    const fileParts = [];
-    const centralParts = [];
-    let offset = 0;
-    const DOS_TIME = 0;
-    const DOS_DATE = 0x21; // 1980-01-01
 
-    entries.forEach((e) => {
-      const nameBytes = enc.encode(e.name);
-      const data = e.bytes;
-      const crc = crc32(data);
-      const lh = [];
-      u32(lh, 0x04034b50); u16(lh, 20); u16(lh, 0); u16(lh, 0);
-      u16(lh, DOS_TIME); u16(lh, DOS_DATE);
-      u32(lh, crc); u32(lh, data.length); u32(lh, data.length);
-      u16(lh, nameBytes.length); u16(lh, 0);
-      const lhBytes = Uint8Array.from(lh);
-      fileParts.push(lhBytes, nameBytes, data);
+    // ---- Mascot designs (inline SVG, each with a kawaii face) ----
+    var M_DEFS =
+        '<defs>' +
+        '<linearGradient id="mgP" x1="0" y1="0" x2="0" y2="1">' +
+        '<stop offset="0" stop-color="#9b8dff"/><stop offset="1" stop-color="#6d5dfc"/></linearGradient>' +
+        '<linearGradient id="mgY" x1="0" y1="0" x2="0" y2="1">' +
+        '<stop offset="0" stop-color="#ffd23f"/><stop offset="1" stop-color="#ffab00"/></linearGradient>' +
+        '</defs>';
 
-      const cd = [];
-      u32(cd, 0x02014b50); u16(cd, 20); u16(cd, 20); u16(cd, 0); u16(cd, 0);
-      u16(cd, DOS_TIME); u16(cd, DOS_DATE);
-      u32(cd, crc); u32(cd, data.length); u32(cd, data.length);
-      u16(cd, nameBytes.length); u16(cd, 0); u16(cd, 0);
-      u16(cd, 0); u16(cd, 0); u32(cd, 0);
-      u32(cd, offset);
-      centralParts.push(Uint8Array.from(cd), nameBytes);
+    // A reusable face centered at (cx, cy), scaled by s.
+    function mFace(cx, cy, s) {
+        s = s || 1;
+        var g = 11 * s, er = 5 * s, sh = 1.7 * s, sm = 8 * s;
+        function n(v) { return Math.round(v * 10) / 10; }
+        return '' +
+            '<ellipse cx="' + n(cx - g - 1) + '" cy="' + n(cy + 7 * s) + '" rx="' + n(5.5 * s) + '" ry="' + n(3.3 * s) + '" fill="#ff9ec4" opacity="0.7"/>' +
+            '<ellipse cx="' + n(cx + g + 1) + '" cy="' + n(cy + 7 * s) + '" rx="' + n(5.5 * s) + '" ry="' + n(3.3 * s) + '" fill="#ff9ec4" opacity="0.7"/>' +
+            '<circle cx="' + n(cx - g) + '" cy="' + n(cy) + '" r="' + n(er) + '" fill="#1c1e21"/>' +
+            '<circle cx="' + n(cx + g) + '" cy="' + n(cy) + '" r="' + n(er) + '" fill="#1c1e21"/>' +
+            '<circle cx="' + n(cx - g + sh) + '" cy="' + n(cy - sh) + '" r="' + n(sh) + '" fill="#fff"/>' +
+            '<circle cx="' + n(cx + g + sh) + '" cy="' + n(cy - sh) + '" r="' + n(sh) + '" fill="#fff"/>' +
+            '<path d="M' + n(cx - sm) + ' ' + n(cy + 9 * s) + ' Q' + n(cx) + ' ' + n(cy + 16 * s) + ' ' + n(cx + sm) + ' ' + n(cy + 9 * s) + '" stroke="#1c1e21" stroke-width="' + n(2.6 * s) + '" fill="none" stroke-linecap="round"/>';
+    }
 
-      offset += lhBytes.length + nameBytes.length + data.length;
-    });
+    function svgWrap(viewBox, inner) {
+        return '<svg class="mascot-svg" viewBox="' + viewBox + '" xmlns="http://www.w3.org/2000/svg">' +
+            M_DEFS + inner + '</svg>';
+    }
 
-    let cdSize = 0;
-    centralParts.forEach((p) => { cdSize += p.length; });
-    const eocd = [];
-    u32(eocd, 0x06054b50); u16(eocd, 0); u16(eocd, 0);
-    u16(eocd, entries.length); u16(eocd, entries.length);
-    u32(eocd, cdSize); u32(eocd, offset); u16(eocd, 0);
+    function tBarTicks() {
+        var o = "";
+        for (var x = 24; x <= 96; x += 12) {
+            o += '<line x1="' + x + '" y1="33" x2="' + x + '" y2="40" stroke="#fff" stroke-width="2"/>';
+        }
+        return o;
+    }
+    function rulerTicks() {
+        var o = "", i = 0;
+        for (var y = 22; y <= 98; y += 11) {
+            var len = (i % 2 === 0) ? 12 : 7;
+            o += '<line x1="40" y1="' + y + '" x2="' + (40 + len) + '" y2="' + y + '" stroke="#fff" stroke-width="2"/>';
+            i++;
+        }
+        return o;
+    }
+    function sunRays() {
+        var o = "";
+        for (var i = 0; i < 12; i++) {
+            var a = (Math.PI * 2 / 12) * i;
+            var x1 = 60 + Math.cos(a) * 34, y1 = 60 + Math.sin(a) * 34;
+            var x2 = 60 + Math.cos(a) * 46, y2 = 60 + Math.sin(a) * 46;
+            o += '<line x1="' + x1.toFixed(1) + '" y1="' + y1.toFixed(1) + '" x2="' + x2.toFixed(1) +
+                '" y2="' + y2.toFixed(1) + '" stroke="#ffab00" stroke-width="5" stroke-linecap="round"/>';
+        }
+        return o;
+    }
 
-    const all = fileParts.concat(centralParts, [Uint8Array.from(eocd)]);
-    let total = 0;
-    all.forEach((p) => { total += p.length; });
-    const out = new Uint8Array(total);
-    let pos = 0;
-    all.forEach((p) => { out.set(p, pos); pos += p.length; });
-    return out;
-  }
+    var MASCOT_DESIGNS = [
+        { key: "blob", name: "Blob", build: function () {
+            return svgWrap("0 0 120 128",
+                '<path d="M60 12 Q56 0 70 3" stroke="#6d5dfc" stroke-width="5" fill="none" stroke-linecap="round"/>' +
+                '<path d="M60 10 C31 10 18 33 18 60 C18 98 34 122 60 122 C86 122 102 98 102 60 C102 33 89 10 60 10 Z" fill="url(#mgP)"/>' +
+                mFace(60, 62, 1.15));
+        } },
+        { key: "tsquare", name: "T-square", build: function () {
+            return svgWrap("0 0 120 120",
+                '<rect x="14" y="16" width="92" height="22" rx="7" fill="#6d5dfc"/>' + tBarTicks() +
+                '<rect x="48" y="34" width="24" height="74" rx="8" fill="#9b8dff"/>' +
+                mFace(60, 74, 0.92));
+        } },
+        { key: "ruler", name: "Ruler", build: function () {
+            return svgWrap("0 0 120 120",
+                '<rect x="40" y="10" width="40" height="100" rx="8" fill="#9b8dff"/>' + rulerTicks() +
+                mFace(62, 58, 0.95));
+        } },
+        { key: "floppy", name: "Floppy disc", build: function () {
+            return svgWrap("0 0 120 120",
+                '<rect x="16" y="16" width="88" height="88" rx="6" fill="#6d5dfc"/>' +
+                '<rect x="58" y="16" width="26" height="30" fill="#bdb6ec"/>' +
+                '<rect x="64" y="20" width="8" height="22" rx="1" fill="#6d5dfc"/>' +
+                '<rect x="28" y="56" width="64" height="42" rx="3" fill="#fff"/>' +
+                mFace(60, 73, 0.92));
+        } },
+        { key: "card", name: "Card", build: function () {
+            return svgWrap("0 0 120 120",
+                '<rect x="28" y="12" width="64" height="96" rx="10" fill="#fff" stroke="#6d5dfc" stroke-width="3"/>' +
+                '<text x="40" y="34" font-size="16" fill="#e0405a" text-anchor="middle">&#9829;</text>' +
+                '<text x="80" y="100" font-size="16" fill="#e0405a" text-anchor="middle">&#9829;</text>' +
+                mFace(60, 60, 0.95));
+        } },
+        { key: "sun", name: "Sun", build: function () {
+            return svgWrap("0 0 120 120",
+                sunRays() + '<circle cx="60" cy="60" r="30" fill="url(#mgY)"/>' +
+                mFace(60, 60, 1));
+        } },
+        { key: "moon", name: "Moon", build: function () {
+            return svgWrap("0 0 120 120",
+                '<circle cx="92" cy="36" r="2.5" fill="#f6e27a"/><circle cx="100" cy="60" r="2" fill="#f6e27a"/>' +
+                '<path d="M64 22 A34 34 0 1 0 64 98 A24 24 0 1 1 64 22 Z" fill="#f6e27a"/>' +
+                mFace(52, 60, 0.9));
+        } }
+    ];
 
-  function downloadResultsXlsx() {
-    if (!state.built || AHPTree.leaves(state.tree).length < 1 || state.alternatives.length < 2) return;
-    const date = new Date().toISOString().slice(0, 10);
-    downloadFile(`AHP-${slugify(state.goal)}-${date}.xlsx`, buildXlsx(),
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-  }
+    function currentDesign() {
+        for (var i = 0; i < MASCOT_DESIGNS.length; i++) {
+            if (MASCOT_DESIGNS[i].key === state.mascot.design) return MASCOT_DESIGNS[i];
+        }
+        return MASCOT_DESIGNS[0];
+    }
 
-  // ---- Build action -------------------------------------------------------
-  function handleBuild() {
-    const v = $("setupValidation");
-    const leaves = AHPTree.leaves(state.tree);
-    const topLevel = state.tree.children.length;
-    if (topLevel < 2) { v.textContent = "Add at least two top-level criteria."; return; }
-    if (leaves.length < 1) { v.textContent = "The hierarchy needs at least one leaf criterion."; return; }
-    if (state.alternatives.length < 2) { v.textContent = "Add at least two alternatives."; return; }
-    if (state.tree.children.some((c) => !c.name.trim())) { v.textContent = "Every criterion needs a name."; return; }
-    v.textContent = "";
+    function renderMascotBody() {
+        el.mascotBody.innerHTML = currentDesign().build();
+    }
 
-    buildMatrices();
-    state.activeCompareKey = null;
-    renderCompareStep();
-    renderResults();
-    save();
-    $("compare").scrollIntoView({ behavior: "smooth", block: "start" });
-  }
+    function renderMascotPicker() {
+        el.mascotPicker.innerHTML = "";
+        MASCOT_DESIGNS.forEach(function (d) {
+            var btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "mascot-swatch" + (d.key === state.mascot.design ? " is-active" : "");
+            btn.title = d.name;
+            btn.innerHTML = '<span class="mascot-swatch-art">' + d.build() + '</span>' +
+                '<span class="mascot-swatch-name">' + d.name + '</span>';
+            btn.addEventListener("click", function () {
+                state.mascot.design = d.key;
+                persist();
+                renderMascotBody();
+                renderMascotPicker();
+                el.mascotPicker.hidden = true;
+            });
+            el.mascotPicker.appendChild(btn);
+        });
+    }
 
-  // ---- Utilities ----------------------------------------------------------
-  function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, (c) => ({
-      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-    }[c]));
-  }
+    // ---- Mascot position (dragging) ----
+    function positionMascot(x, y) {
+        var w = el.mascot.offsetWidth, h = el.mascot.offsetHeight;
+        var maxX = window.innerWidth - w - 4, maxY = window.innerHeight - h - 4;
+        x = Math.max(4, Math.min(x, Math.max(4, maxX)));
+        y = Math.max(4, Math.min(y, Math.max(4, maxY)));
+        el.mascot.style.left = x + "px";
+        el.mascot.style.top = y + "px";
+        el.mascot.style.right = "auto";
+        el.mascot.style.bottom = "auto";
+    }
 
-  // ---- Sample data --------------------------------------------------------
-  function sampleData() {
-    state.goal = "Choose the best laptop for daily work";
-    state.description = "Worked example: three laptops compared on cost (upfront + running), " +
-      "performance (CPU/GPU + memory), battery life and build quality, judged by two respondents " +
-      "— Priya (performance-focused) and Sam (budget-focused). Try the Group (avg) view.";
-    state.nextId = 1;
-    const id = () => newId();
-    const cost = { id: id(), name: "Cost", children: [] };
-    const costUpfront = { id: id(), name: "Upfront price", children: [] };
-    const costRunning = { id: id(), name: "Running cost", children: [] };
-    cost.children = [costUpfront, costRunning];
+    function applyMascotPosition() {
+        if (state.mascot.x != null && state.mascot.y != null) {
+            positionMascot(state.mascot.x, state.mascot.y);
+        } else {
+            // Revert to the default CSS corner.
+            el.mascot.style.left = "";
+            el.mascot.style.top = "";
+            el.mascot.style.right = "";
+            el.mascot.style.bottom = "";
+        }
+    }
 
-    const perf = { id: id(), name: "Performance", children: [] };
-    const perfCpu = { id: id(), name: "CPU/GPU", children: [] };
-    const perfRam = { id: id(), name: "Memory", children: [] };
-    perf.children = [perfCpu, perfRam];
+    // ---- Mascot visibility (dismiss / summon) ----
+    function applyMascotVisibility() {
+        el.mascot.hidden = state.mascot.dismissed;
+        el.mascotSummon.hidden = !state.mascot.dismissed;
+    }
 
-    const battery = { id: id(), name: "Battery life", children: [] };
-    const build = { id: id(), name: "Build quality", children: [] };
+    function renderMascot() {
+        renderMascotBody();
+        renderMascotPicker();
+        applyMascotVisibility();
+        applyMascotPosition();
+    }
 
-    state.tree = { id: "root", name: "Goal", children: [cost, perf, battery, build] };
-    state.alternatives = ["UltraBook X", "PowerPro 15", "BudgetMate"];
+    // ---- Play with me (card duel vs the mascot) ----
+    // Cards rank 1–7. Higher rank wins the round. Each card is used once over
+    // 7 rounds; most round-wins takes the match. No armor, no power-ups.
+    var GAME_CARDS = [
+        { rank: 1, name: "Magikarp", emoji: "🐟" },
+        { rank: 2, name: "Caterpie", emoji: "🐛" },
+        { rank: 3, name: "Jigglypuff", emoji: "🎤" },
+        { rank: 4, name: "Pikachu", emoji: "⚡" },
+        { rank: 5, name: "Snorlax", emoji: "😴" },
+        { rank: 6, name: "Charizard", emoji: "🔥" },
+        { rank: 7, name: "Mewtwo", emoji: "🔮" }
+    ];
+    var GAME_BY_RANK = {};
+    GAME_CARDS.forEach(function (c) { GAME_BY_RANK[c.rank] = c; });
+    var GAME_RANKS = GAME_CARDS.map(function (c) { return c.rank; });
 
-    // Two respondents with different priorities, to show group aggregation.
-    const priya = makeRespondent("Priya");
-    const sam = makeRespondent("Sam");
-    state.respondents = [priya, sam];
-    state.activeRespondent = priya.id;
-    buildMatrices();
-
-    const leaves = AHPTree.leaves(state.tree);
-    // Both respondents perceive the same hardware facts, so alternative scoring is shared.
-    // Alternatives order: [UltraBook X, PowerPro 15, BudgetMate].
-    const altSpec = {
-      "Upfront price": [[0, 1, 3], [0, 2, 1 / 2], [1, 2, 1 / 5]],
-      "Running cost": [[0, 1, 2], [0, 2, 1 / 2], [1, 2, 1 / 3]],
-      "CPU/GPU": [[0, 1, 1 / 4], [0, 2, 3], [1, 2, 6]],
-      "Memory": [[0, 1, 1 / 3], [0, 2, 2], [1, 2, 4]],
-      "Battery life": [[0, 1, 4], [0, 2, 2], [1, 2, 1 / 2]],
-      "Build quality": [[0, 1, 1], [0, 2, 4], [1, 2, 4]],
+    // Always-excited mascot dialogue, keyed by event.
+    var GAME_LINES = {
+        start: [
+            "Ooh a game! I'm SO ready — let's go! 🎉",
+            "Yay, you came to play! This is gonna be fun!",
+            "A duel?! Yes yes yes! Show me your best card!"
+        ],
+        thinking: [
+            "Hmm, let me think 🤔",
+            "Ooh, what to play",
+            "Let me see 👀",
+            "Decisions, decisions"
+        ],
+        mascotWin: [
+            "Hehe, I got that one! So fun!",
+            "Yes! Point for me — but you're doing great!",
+            "Gotcha! Ooh I love this game!",
+            "Woohoo, mine! What are you playing next?!"
+        ],
+        playerWin: [
+            "Whoa, nice one! You're so good at this!",
+            "Aww you got me — amazing! Again, again!",
+            "Eee that was clever! I'm still having a blast!",
+            "You win that round! This is the best!"
+        ],
+        tie: [
+            "Twins! Hehe, same card! So cool!",
+            "Whoa, a tie! What are the odds?! Love it!",
+            "Matchy-matchy! This is exciting!"
+        ],
+        matchMascotWin: [
+            "GG! I won this one — but that was super fun! Rematch?!",
+            "Yay I got it! You pushed me hard though — again?!"
+        ],
+        matchPlayerWin: [
+            "You WON! Amazing!! That was awesome — let's play again!",
+            "Champion! You beat me and I loved every second! Rematch?!"
+        ],
+        matchTie: [
+            "A perfect tie!! How exciting — one more game?!",
+            "We matched evenly! So so fun — rematch?!"
+        ]
     };
-    // criteria order: [Cost, Performance, Battery, Build]
-    const fill = (r, rootPairs, subCost, subPerf) => {
-      rootPairs.forEach(([i, j, v]) => AHP.setPair(r.criteriaMatrices["root"], i, j, v));
-      AHP.setPair(r.criteriaMatrices[cost.id], 0, 1, subCost); // Upfront vs Running
-      AHP.setPair(r.criteriaMatrices[perf.id], 0, 1, subPerf); // CPU/GPU vs Memory
-      Object.keys(altSpec).forEach((leafName) => {
-        const leaf = leaves.find((l) => l.name === leafName);
-        if (leaf) altSpec[leafName].forEach(([i, j, v]) => AHP.setPair(r.altMatrices[leaf.id], i, j, v));
-      });
+    function pickGameLine(cat) {
+        var arr = GAME_LINES[cat];
+        return arr[Math.floor(Math.random() * arr.length)];
+    }
+
+    // Most-likely card the player plays at this round index, learned from the
+    // last 100 games and restricted to cards they still hold. null if no data.
+    function predictPlayerCard(roundIndex, playerHand) {
+        var tally = {};
+        state.game.history.forEach(function (g) {
+            var c = g[roundIndex];
+            if (c != null && playerHand.indexOf(c) >= 0) tally[c] = (tally[c] || 0) + 1;
+        });
+        var best = null, bestN = 0;
+        Object.keys(tally).forEach(function (k) {
+            if (tally[k] > bestN) { bestN = tally[k]; best = Number(k); }
+        });
+        return bestN > 0 ? best : null;
+    }
+
+    // Mascot's choice: beat the predicted card with the smallest winner;
+    // otherwise beat the average of the player's remaining hand; else sacrifice
+    // the lowest card. (Decided without seeing the player's actual pick.)
+    function mascotPick(mascotHand, playerHand, predicted) {
+        var sorted = mascotHand.slice().sort(function (a, b) { return a - b; });
+        if (predicted != null && playerHand.indexOf(predicted) >= 0) {
+            var beat = sorted.find(function (c) { return c > predicted; });
+            return beat !== undefined ? beat : sorted[0];
+        }
+        var avg = playerHand.reduce(function (a, b) { return a + b; }, 0) / playerHand.length;
+        var beatAvg = sorted.find(function (c) { return c > avg; });
+        return beatAvg !== undefined ? beatAvg : sorted[0];
+    }
+
+    // A quick, dependency-free confetti shower. Pieces fall full-width and the
+    // container removes itself once they're done. Skipped for reduced-motion.
+    function burstConfetti() {
+        if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+        var colors = ["#6d5dfc", "#9b8dff", "#ff9ec4", "#ffd23f", "#31a24c", "#e0405a"];
+        var box = document.createElement("div");
+        box.className = "confetti";
+        for (var i = 0; i < 90; i++) {
+            var p = document.createElement("i");
+            p.style.left = (Math.random() * 100) + "vw";
+            p.style.background = colors[i % colors.length];
+            p.style.width = (6 + Math.random() * 6).toFixed(1) + "px";
+            p.style.height = (10 + Math.random() * 8).toFixed(1) + "px";
+            p.style.setProperty("--dx", (Math.random() * 220 - 110).toFixed(0) + "px");
+            p.style.animationDelay = (Math.random() * 0.25).toFixed(2) + "s";
+            p.style.animationDuration = (1.1 + Math.random() * 0.9).toFixed(2) + "s";
+            box.appendChild(p);
+        }
+        document.body.appendChild(box);
+        setTimeout(function () { box.remove(); }, 2400);
+    }
+
+    var gameState = null;
+
+    function newGame() {
+        gameState = {
+            playerHand: GAME_RANKS.slice(),
+            mascotHand: GAME_RANKS.slice(),
+            round: 0,
+            playerScore: 0,
+            mascotScore: 0,
+            picks: [],
+            lastPlayer: null,
+            lastMascot: null,
+            lastOutcome: null, // "thinking" | "player" | "mascot" | "tie"
+            thinking: false,
+            bubble: pickGameLine("start"),
+            over: false,
+            result: null // "player" | "mascot" | "tie"
+        };
+        renderGame();
+    }
+
+    function playerPlay(rank) {
+        if (!gameState || gameState.over || gameState.thinking) return;
+        var pIdx = gameState.playerHand.indexOf(rank);
+        if (pIdx < 0) return; // already played / invalid
+
+        // Mascot decides BEFORE the player's card is removed, so it never peeks.
+        var predicted = predictPlayerCard(gameState.round, gameState.playerHand);
+        var mRank = mascotPick(gameState.mascotHand, gameState.playerHand, predicted);
+
+        gameState.playerHand.splice(pIdx, 1);
+        gameState.mascotHand.splice(gameState.mascotHand.indexOf(mRank), 1);
+        gameState.picks.push(rank);
+
+        // Show the player's card, then let the mascot "think" before flipping.
+        gameState.lastPlayer = rank;
+        gameState.lastMascot = mRank;
+        gameState.lastOutcome = "thinking";
+        gameState.thinking = true;
+        gameState.bubble = pickGameLine("thinking");
+        renderGame();
+
+        setTimeout(revealRound, 850);
+    }
+
+    // Second phase: resolve the round and flip the mascot's card face-up.
+    function revealRound() {
+        if (!gameState || !gameState.thinking) return; // bailed (e.g. New game pressed)
+        gameState.thinking = false;
+
+        var rank = gameState.lastPlayer, mRank = gameState.lastMascot;
+        var outcome;
+        if (rank > mRank) { outcome = "player"; gameState.playerScore++; }
+        else if (mRank > rank) { outcome = "mascot"; gameState.mascotScore++; }
+        else { outcome = "tie"; }
+
+        gameState.lastOutcome = outcome;
+        gameState.round++;
+
+        if (gameState.round >= 7) {
+            endMatch();
+        } else {
+            gameState.bubble = pickGameLine(
+                outcome === "mascot" ? "mascotWin" : outcome === "player" ? "playerWin" : "tie"
+            );
+        }
+        renderGame();
+    }
+
+    function endMatch() {
+        gameState.over = true;
+        var result = gameState.playerScore > gameState.mascotScore ? "player"
+            : gameState.mascotScore > gameState.playerScore ? "mascot" : "tie";
+        gameState.result = result;
+        gameState.bubble = pickGameLine(
+            result === "mascot" ? "matchMascotWin" : result === "player" ? "matchPlayerWin" : "matchTie"
+        );
+
+        // Persist: learning history (last 100) + cumulative score.
+        state.game.history.push(gameState.picks.slice());
+        if (state.game.history.length > 100) {
+            state.game.history = state.game.history.slice(-100);
+        }
+        state.game.stats.matches++;
+        if (result === "player") state.game.stats.playerWins++;
+        else if (result === "mascot") state.game.stats.mascotWins++;
+        else state.game.stats.ties++;
+        persist();
+
+        if (result === "player") burstConfetti(); // 🎉 celebrate the win
+    }
+
+    // Wipe the cumulative win/loss/tie record (keeps the current game and the
+    // mascot's learning history intact).
+    function resetGameScore() {
+        if (!confirm("Reset your lifetime score (wins / losses / ties)?")) return;
+        state.game.stats = { matches: 0, playerWins: 0, mascotWins: 0, ties: 0 };
+        persist();
+        renderGame();
+    }
+
+    function gameCardHTML(rank) {
+        var c = GAME_BY_RANK[rank];
+        return '<span class="game-card-emoji">' + c.emoji + '</span>' +
+            '<span class="game-card-rank">' + c.rank + '</span>' +
+            '<span class="game-card-name">' + c.name + '</span>';
+    }
+
+    function renderGame() {
+        if (!gameState) { newGame(); return; } // first open seeds a fresh match (newGame re-renders)
+        var g = gameState;
+
+        el.gameMascotFace.innerHTML = currentDesign().build();
+        if (g.thinking) {
+            // Show the line plus an animated typing indicator during the pause.
+            el.gameBubble.textContent = g.bubble + " ";
+            var dots = document.createElement("span");
+            dots.className = "typing-dots";
+            dots.innerHTML = "<i></i><i></i><i></i>";
+            el.gameBubble.appendChild(dots);
+        } else {
+            el.gameBubble.textContent = g.bubble;
+        }
+
+        // Mascot's remaining cards, face down.
+        el.gameMascotHand.innerHTML = "";
+        g.mascotHand.forEach(function () {
+            var back = document.createElement("div");
+            back.className = "game-card game-card-back";
+            el.gameMascotHand.appendChild(back);
+        });
+
+        el.gameYouScore.textContent = String(g.playerScore);
+        el.gameMascotScore.textContent = String(g.mascotScore);
+        el.gameRound.textContent = g.over ? "Match over" : ("Round " + (g.round + 1) + " of 7");
+
+        // Reveal area
+        if (g.lastPlayer == null) {
+            el.gameReveal.innerHTML = '<p class="game-hint">Pick a card to start the round! 👇</p>';
+        } else if (g.lastOutcome === "thinking") {
+            // Your card is shown; the mascot's stays face-down while it "thinks".
+            el.gameReveal.innerHTML =
+                '<div class="game-reveal-row">' +
+                '<div class="game-card played from-left">' + gameCardHTML(g.lastPlayer) + '</div>' +
+                '<span class="game-vs">vs</span>' +
+                '<div class="game-card-back game-back-reveal thinking-pulse"></div>' +
+                '</div>' +
+                '<p class="game-reveal-label thinking">thinking…</p>';
+        } else {
+            var label = g.lastOutcome === "player" ? "You win the round! 🎉"
+                : g.lastOutcome === "mascot" ? "Mascot wins the round!" : "It's a tie!";
+            var pCls = g.lastOutcome === "player" ? "win" : g.lastOutcome === "mascot" ? "lose" : "tie";
+            var mCls = g.lastOutcome === "mascot" ? "win" : g.lastOutcome === "player" ? "lose" : "tie";
+            el.gameReveal.innerHTML =
+                '<div class="game-reveal-row">' +
+                '<div class="game-card played ' + pCls + '">' + gameCardHTML(g.lastPlayer) + '</div>' +
+                '<span class="game-vs">vs</span>' +
+                // Mascot's card flips from face-down to face-up.
+                '<div class="gcf ' + mCls + '">' +
+                '<div class="gcf-inner">' +
+                '<div class="gcf-face gcf-back"></div>' +
+                '<div class="gcf-face gcf-front">' + gameCardHTML(g.lastMascot) + '</div>' +
+                '</div>' +
+                '</div>' +
+                '</div>' +
+                '<p class="game-reveal-label ' + pCls + '">' + label + '</p>';
+        }
+
+        // Hand
+        el.gameHand.innerHTML = "";
+        if (g.over) {
+            var resultText = g.result === "player" ? "🏆 You won the match!"
+                : g.result === "mascot" ? "Mascot won the match!" : "The match is a tie!";
+            var done = document.createElement("p");
+            done.className = "game-result " + (g.result === "player" ? "win" : g.result === "mascot" ? "lose" : "tie");
+            done.textContent = resultText + "  (" + g.playerScore + "–" + g.mascotScore + ")";
+            el.gameHand.appendChild(done);
+            el.gameNewBtn.textContent = "Play again";
+        } else {
+            g.playerHand.slice().sort(function (a, b) { return a - b; }).forEach(function (rank) {
+                var btn = document.createElement("button");
+                btn.type = "button";
+                btn.className = "game-card";
+                btn.disabled = g.thinking; // no playing while the mascot decides
+                btn.innerHTML = gameCardHTML(rank);
+                btn.addEventListener("click", function () { playerPlay(rank); });
+                el.gameHand.appendChild(btn);
+            });
+            el.gameNewBtn.textContent = "Restart game";
+        }
+
+        // Cumulative stats
+        var s = state.game.stats;
+        el.gameStats.textContent = "Record — you " + s.playerWins + " · mascot " + s.mascotWins +
+            " · ties " + s.ties + "  (" + s.matches + " played, learning from last " +
+            Math.min(state.game.history.length, 100) + ")";
+    }
+
+    // ---- Wire up events ----
+    function bindEvents() {
+        el.profileName.addEventListener("input", function () {
+            state.profile.name = el.profileName.value;
+            applyAvatar(el.avatar); // initial follows the name (when no custom picture)
+            persist();
+            renderFeed(); // author name (and avatar) on posts follows the profile
+        });
+
+        // --- Profile picture: change / remove ---
+        el.avatar.addEventListener("click", function () { el.avatarInput.click(); });
+
+        el.avatarInput.addEventListener("change", function () {
+            var file = el.avatarInput.files[0];
+            el.avatarInput.value = ""; // allow re-picking the same file
+            if (!file) return;
+            processAvatar(file).then(function (dataUrl) {
+                var prev = state.profile.avatar;
+                state.profile.avatar = dataUrl;
+                if (!Store.save(state)) {
+                    state.profile.avatar = prev; // roll back on quota failure
+                    alert("Couldn't save the picture — storage may be full.");
+                    return;
+                }
+                renderProfile();
+                renderFeed(); // refresh post avatars
+            }).catch(function (err) {
+                alert(err.message);
+            });
+        });
+
+        el.avatarRemove.addEventListener("click", function () {
+            if (!state.profile.avatar) return;
+            state.profile.avatar = null;
+            persist();
+            renderProfile();
+            renderFeed();
+        });
+
+        // --- Daily reminders ---
+        el.newReminderForm.addEventListener("submit", function (e) {
+            e.preventDefault();
+            addReminder(el.newReminderText.value);
+            el.newReminderText.value = "";
+        });
+
+        // --- Mascot: drag to move, click (no drag) for a new line ---
+        var drag = null;
+        function onPointerMove(e) {
+            if (!drag) return;
+            var dx = e.clientX - drag.sx, dy = e.clientY - drag.sy;
+            if (Math.abs(dx) + Math.abs(dy) > 4) drag.moved = true;
+            positionMascot(drag.ox + dx, drag.oy + dy);
+        }
+        function onPointerUp() {
+            document.removeEventListener("pointermove", onPointerMove);
+            document.removeEventListener("pointerup", onPointerUp);
+            if (!drag) return;
+            if (drag.moved) {
+                var rect = el.mascot.getBoundingClientRect();
+                state.mascot.x = rect.left;
+                state.mascot.y = rect.top;
+                persist();
+            } else {
+                // A tap with no movement = ask for a new thought.
+                updateMascotLine();
+                el.mascot.classList.remove("bounce");
+                void el.mascot.offsetWidth;
+                el.mascot.classList.add("bounce");
+            }
+            drag = null;
+        }
+        el.mascot.addEventListener("pointerdown", function (e) {
+            // Let the control buttons and the design picker handle their own clicks.
+            if (e.target.closest(".mascot-controls") || e.target.closest(".mascot-picker")) return;
+            var rect = el.mascot.getBoundingClientRect();
+            drag = { sx: e.clientX, sy: e.clientY, ox: rect.left, oy: rect.top, moved: false };
+            document.addEventListener("pointermove", onPointerMove);
+            document.addEventListener("pointerup", onPointerUp);
+        });
+
+        // --- Mascot: design picker, dismiss, summon ---
+        el.mascotDesignBtn.addEventListener("click", function () {
+            el.mascotPicker.hidden = !el.mascotPicker.hidden;
+        });
+        el.mascotDismissBtn.addEventListener("click", function () {
+            state.mascot.dismissed = true;
+            el.mascotPicker.hidden = true;
+            persist();
+            applyMascotVisibility();
+        });
+        el.mascotSummon.addEventListener("click", function () {
+            state.mascot.dismissed = false;
+            persist();
+            applyMascotVisibility();
+            applyMascotPosition();
+            updateMascotLine();
+        });
+
+        // Keep the mascot on-screen if the window is resized.
+        window.addEventListener("resize", applyMascotPosition);
+
+        setInterval(updateMascotLine, 30000);
+
+        el.statusInput.addEventListener("input", function () {
+            state.profile.status = el.statusInput.value;
+            persist();
+        });
+
+        el.statusDot.addEventListener("click", function () {
+            var i = AVAILABILITY.indexOf(state.profile.availability);
+            state.profile.availability = AVAILABILITY[(i + 1) % AVAILABILITY.length];
+            setAvailabilityClass(state.profile.availability);
+            persist();
+        });
+
+        el.composerText.addEventListener("input", function () {
+            updateCharCount();
+            refreshPostButton();
+        });
+
+        el.imageInput.addEventListener("change", function () {
+            handleFiles(el.imageInput.files);
+            el.imageInput.value = ""; // allow re-picking the same file
+        });
+
+        el.postBtn.addEventListener("click", submitPost);
+
+        // Ctrl/Cmd+Enter to post quickly.
+        el.composerText.addEventListener("keydown", function (e) {
+            if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+                e.preventDefault();
+                submitPost();
+            }
+        });
+
+        // --- Tabs ---
+        el.tabFeed.addEventListener("click", function () { switchTab("feed"); });
+        el.tabAlbums.addEventListener("click", function () { switchTab("albums"); });
+        el.tabSheets.addEventListener("click", function () { switchTab("sheets"); });
+        el.tabPlay.addEventListener("click", function () { switchTab("play"); });
+
+        // --- Play with me ---
+        el.gameNewBtn.addEventListener("click", newGame);
+        el.gameResetBtn.addEventListener("click", resetGameScore);
+
+        // --- Albums: list view ---
+        el.newAlbumForm.addEventListener("submit", function (e) {
+            e.preventDefault();
+            createAlbum(el.newAlbumName.value);
+            el.newAlbumName.value = "";
+        });
+
+        // --- Albums: detail view ---
+        el.albumBackBtn.addEventListener("click", function () {
+            openAlbumId = null;
+            showAlbumList();
+            renderAlbums();
+        });
+
+        el.albumTitleInput.addEventListener("change", function () {
+            if (openAlbumId) renameAlbum(openAlbumId, el.albumTitleInput.value);
+        });
+
+        el.albumImageInput.addEventListener("change", function () {
+            if (openAlbumId) addImagesToAlbum(openAlbumId, el.albumImageInput.files);
+            el.albumImageInput.value = ""; // allow re-picking the same file
+        });
+
+        el.albumDeleteBtn.addEventListener("click", function () {
+            if (openAlbumId) deleteAlbum(openAlbumId);
+        });
+
+        // Close any open "move picture" menu when clicking elsewhere.
+        document.addEventListener("click", function (e) {
+            if (!e.target.closest(".album-move-menu") && !e.target.closest(".album-thumb-move")) {
+                closeMoveMenus();
+            }
+        });
+
+        // --- To-Do ---
+        el.newTodoForm.addEventListener("submit", function (e) {
+            e.preventDefault();
+            addTodo(el.newTodoText.value);
+            el.newTodoText.value = "";
+        });
+
+        var filterBtns = el.todosPanel.querySelectorAll(".todo-filter");
+        Array.prototype.forEach.call(filterBtns, function (btn) {
+            btn.addEventListener("click", function () {
+                setTodoFilter(btn.getAttribute("data-filter"));
+            });
+        });
+
+        el.clearCompletedBtn.addEventListener("click", clearCompleted);
+
+        // --- Sheets: list view ---
+        el.newSheetForm.addEventListener("submit", function (e) {
+            e.preventDefault();
+            createSheet(el.newSheetName.value);
+            el.newSheetName.value = "";
+        });
+
+        el.importNewCsvInput.addEventListener("change", function () {
+            if (el.importNewCsvInput.files[0]) importCsvAsNewSheet(el.importNewCsvInput.files[0]);
+            el.importNewCsvInput.value = ""; // allow re-importing the same file
+        });
+
+        // --- Sheets: detail view ---
+        el.sheetBackBtn.addEventListener("click", function () {
+            openSheetId = null;
+            showSheetList();
+            renderSheets();
+        });
+
+        el.sheetTitleInput.addEventListener("change", function () {
+            if (openSheetId) renameSheet(openSheetId, el.sheetTitleInput.value);
+        });
+
+        el.addColumnBtn.addEventListener("click", function () {
+            if (openSheetId) addColumn(openSheetId);
+        });
+
+        el.addRowBtn.addEventListener("click", function () {
+            if (openSheetId) addRow(openSheetId);
+        });
+
+        el.exportCsvBtn.addEventListener("click", function () {
+            if (openSheetId) exportSheet(openSheetId);
+        });
+
+        el.importCsvInput.addEventListener("change", function () {
+            if (openSheetId && el.importCsvInput.files[0]) {
+                importCsvIntoSheet(openSheetId, el.importCsvInput.files[0]);
+            }
+            el.importCsvInput.value = ""; // allow re-importing the same file
+        });
+
+        el.appendCsvInput.addEventListener("change", function () {
+            if (openSheetId && el.appendCsvInput.files[0]) {
+                appendCsvToSheet(openSheetId, el.appendCsvInput.files[0]);
+            }
+            el.appendCsvInput.value = ""; // allow re-appending the same file
+        });
+
+        el.sheetDeleteBtn.addEventListener("click", function () {
+            if (openSheetId) deleteSheet(openSheetId);
+        });
+    }
+
+    // ---- Init ----
+    function init() {
+        renderProfile();
+        updateCharCount();
+        refreshPostButton();
+        renderPreviews();
+        renderFeed();
+        renderAlbumStats();
+        renderTodos(); // always-visible left panel now, so render the full list
+        renderSheetStats();
+        renderMascot();
+        renderReminders();
+        bindEvents();
+    }
+
+    // Expose a tiny bit for the test harness.
+    window.IntrovertsSocialSpace = {
+        getState: function () { return state; },
+        _internals: {
+            relTime: relTime,
+            initial: initial,
+            csvEscape: csvEscape,
+            sheetToCsv: sheetToCsv,
+            csvParse: csvParse,
+            gridFromCsv: gridFromCsv,
+            rowsFromCsvBody: rowsFromCsvBody,
+            todayStr: todayStr,
+            yesterdayStr: yesterdayStr,
+            buildMascotLines: buildMascotLines,
+            mascotDesigns: function () { return MASCOT_DESIGNS; },
+            mascotPick: mascotPick
+        }
     };
 
-    // Priya — performance-focused.
-    fill(priya, [[0, 1, 1 / 2], [0, 2, 2], [0, 3, 3], [1, 2, 3], [1, 3, 4], [2, 3, 2]], 3, 2);
-    // Sam — budget-focused (Cost dominates).
-    fill(sam, [[0, 1, 3], [0, 2, 3], [0, 3, 4], [1, 2, 1], [1, 3, 2], [2, 3, 2]], 4, 1);
-
-    state.activeCompareKey = null;
-    state.activeRespondent = priya.id;
-    state.built = true;
-  }
-
-  // ---- Example decisions (sidebar) ---------------------------------------
-  // Each example scaffolds a goal, a criteria hierarchy and alternatives so the
-  // user can see how to frame a decision. Sub-criteria are given as `children`.
-  const EXAMPLES = [
-    {
-      goal: "Choose the best laptop for work",
-      criteria: [
-        { name: "Cost", children: ["Upfront price", "Running cost"] },
-        { name: "Performance", children: ["CPU/GPU", "Memory"] },
-        { name: "Battery life" },
-        { name: "Build quality" },
-      ],
-      alternatives: ["UltraBook X", "PowerPro 15", "BudgetMate"],
-    },
-    {
-      goal: "Hire the best candidate",
-      criteria: [
-        { name: "Experience" },
-        { name: "Technical skills" },
-        { name: "Culture fit" },
-        { name: "Salary expectation" },
-      ],
-      alternatives: ["Candidate A", "Candidate B", "Candidate C"],
-    },
-    {
-      goal: "Pick a holiday destination",
-      criteria: [
-        { name: "Cost" },
-        { name: "Weather" },
-        { name: "Activities" },
-        { name: "Travel time" },
-      ],
-      alternatives: ["Bali", "Kyoto", "Lisbon"],
-    },
-    {
-      goal: "Select a software vendor",
-      criteria: [
-        { name: "Price" },
-        { name: "Features" },
-        { name: "Support" },
-        { name: "Security" },
-      ],
-      alternatives: ["Vendor X", "Vendor Y", "Vendor Z"],
-    },
-  ];
-
-  function describeCriteria(criteria) {
-    return criteria
-      .map((c) => (c.children && c.children.length
-        ? `${c.name} (${c.children.join(", ")})`
-        : c.name))
-      .join(", ");
-  }
-
-  function renderExamples() {
-    const panel = $("examplesPanel");
-    if (!panel) return;
-    panel.innerHTML = "";
-
-    const card = document.createElement("div");
-    card.className = "card side-card";
-
-    const head = document.createElement("div");
-    head.className = "examples-head";
-    head.innerHTML =
-      `<h3>Not sure where to start?</h3>
-       <p class="hint">Pick a sample decision to auto-fill the goal, criteria and alternatives — then make your own comparisons.</p>`;
-    card.appendChild(head);
-
-    EXAMPLES.forEach((ex) => {
-      const block = document.createElement("div");
-      block.className = "example";
-      block.innerHTML =
-        `<div class="example-goal"><span class="pin">🎯</span><span>${escapeHtml(ex.goal)}</span></div>
-         <div class="example-meta"><b>Criteria:</b> ${escapeHtml(describeCriteria(ex.criteria))}</div>
-         <div class="example-meta"><b>Alternatives:</b> ${escapeHtml(ex.alternatives.join(", "))}</div>`;
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "btn small use-example";
-      btn.textContent = "Use this example";
-      btn.addEventListener("click", () => applyExample(ex));
-      block.appendChild(btn);
-      card.appendChild(block);
-    });
-
-    panel.appendChild(card);
-  }
-
-  // Load an example's structure into the form (goal, hierarchy, alternatives),
-  // leaving the pairwise comparisons for the user to fill in.
-  function applyExample(ex) {
-    state.goal = ex.goal;
-    state.description = "";
-    state.nextId = 1;
-    state.tree = {
-      id: "root",
-      name: "Goal",
-      children: ex.criteria.map((c) => ({
-        id: newId(),
-        name: c.name,
-        children: (c.children || []).map((sub) => ({ id: newId(), name: sub, children: [] })),
-      })),
-    };
-    state.alternatives = ex.alternatives.slice();
-    state.respondents = [];
-    state.activeRespondent = null;
-    state.activeCompareKey = null;
-    state.built = false;
-    ensureRespondents();
-
-    renderWorkspace();
-    save();
-    $("setup").scrollIntoView({ behavior: "smooth", block: "start" });
-  }
-
-  // ---- Init ---------------------------------------------------------------
-  function bindSetup() {
-    $("goalInput").addEventListener("input", (e) => {
-      state.goal = e.target.value;
-      save();
-      if (state.built) renderResults();
-    });
-    $("projectDesc").addEventListener("input", (e) => {
-      state.description = e.target.value;
-      save();
-    });
-    $("addCriteria").addEventListener("click", () => addCriterion($("criteriaInput")));
-    $("addAlternative").addEventListener("click", () => addAlternative($("alternativesInput")));
-    $("criteriaInput").addEventListener("keydown", (e) => { if (e.key === "Enter") addCriterion($("criteriaInput")); });
-    $("alternativesInput").addEventListener("keydown", (e) => { if (e.key === "Enter") addAlternative($("alternativesInput")); });
-    $("buildBtn").addEventListener("click", handleBuild);
-    $("downloadCsv").addEventListener("click", downloadResultsCsv);
-    $("downloadXlsx").addEventListener("click", downloadResultsXlsx);
-
-    // Project controls
-    $("projectSelect").addEventListener("change", (e) => switchProject(e.target.value));
-    $("newProject").addEventListener("click", () => newProject());
-    $("renameProject").addEventListener("click", renameProject);
-    $("dupProject").addEventListener("click", duplicateProject);
-    $("deleteProject").addEventListener("click", deleteProject);
-
-    $("loadSample").addEventListener("click", () => {
-      newProject();          // open the example in its own project (keeps current work)
-      sampleData();          // fill the new project's live state
-      const p = activeProject();
-      if (p) p.name = state.goal || "Example project";
-      save();                // persist sample (name + description) into the project slot
-      renderProjectSelect(); // now reflects the example's name/description tooltip
-      renderWorkspace();
-    });
-
-    $("resetAll").addEventListener("click", () => {
-      if (!confirm("Clear this project's goal, criteria hierarchy, alternatives and all judgements?")) return;
-      applyStateData(blankData());
-      ensureRespondents();
-      renderWorkspace();
-      save();
-    });
-  }
-
-  function init() {
-    bindSetup();
-    renderExamples();
-    loadProjects();
-    applyStateData(activeProject().data);
-    ensureRespondents();
-    renderProjectSelect();
-    renderWorkspace();
-    save(); // normalise legacy data into the registry shape
-  }
-
-  document.addEventListener("DOMContentLoaded", init);
+    document.addEventListener("DOMContentLoaded", init);
 })();
